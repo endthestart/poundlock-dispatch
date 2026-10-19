@@ -1,0 +1,47 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "brace-expansion": {
+      "name": "brace-expansion",
+      "severity": "high",
+      "via": [
+        {
+          "source": 1,
+          "name": "brace-expansion",
+          "title": "Quadratic expansion",
+          "url": "https://github.com/advisories/GHSA-aaaa-aaaa-aaaa",
+          "range": "<1.1.21"
+        },
+        {
+          "source": 2,
+          "name": "brace-expansion",
+          "title": "Quadratic expansion",
+          "url": "https://github.com/advisories/GHSA-aaaa-aaaa-aaaa/",
+          "range": ">=4.0.0 <5.0.12"
+        }
+      ],
+      "nodes": ["node_modules/brace-expansion"]
+    },
+    "minimatch": {
+      "name": "minimatch",
+      "severity": "high",
+      "via": ["brace-expansion"],
+      "nodes": ["node_modules/minimatch"]
+    },
+    "fast-uri": {
+      "name": "fast-uri",
+      "severity": "moderate",
+      "via": [
+        {
+          "source": 3,
+          "name": "fast-uri",
+          "title": "Host case normalization",
+          "url": "https://github.com/advisories/GHSA-bbbb-bbbb-bbbb",
+          "range": ">=3.0.0 <3.1.8"
+        }
+      ],
+      "nodes": ["node_modules/fast-uri"]
+    }
+  },
+  "metadata": {}
+}

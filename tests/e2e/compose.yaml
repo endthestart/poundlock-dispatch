@@ -1,0 +1,76 @@
+# A disposable Poundlock for Dispatch's end-to-end suite: the controller, its job
+# runner and a scripted model server. POUNDLOCK_IMAGE names the Poundlock image
+# under test, pinned by digest for a release.
+services:
+  controller:
+    image: ${POUNDLOCK_IMAGE:?Set POUNDLOCK_IMAGE}
+    command: ["controller"]
+    environment:
+      POUNDLOCK_BIND: 0.0.0.0:7331
+      POUNDLOCK_DATA_DIR: /data
+      POUNDLOCK_RUNTIME_DIR: /run/poundlock
+      POUNDLOCK_EXTERNAL_TIMEOUT_SECONDS: "30"
+    ports:
+      - "127.0.0.1:0:7331"
+    volumes:
+      - controller-state:/data
+      - runtime-secrets:/run/poundlock
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:7331/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      mock-model:
+        condition: service_healthy
+
+  runner:
+    image: ${POUNDLOCK_IMAGE:?Set POUNDLOCK_IMAGE}
+    command: ["runner"]
+    user: "10001:10001"
+    group_add: ["${POUNDLOCK_DOCKER_GID:?Set POUNDLOCK_DOCKER_GID}"]
+    environment:
+      POUNDLOCK_CONTROLLER_URL: http://controller:7331
+      POUNDLOCK_RUNNER_TOKEN_FILE: /run/poundlock/runner-token
+      POUNDLOCK_PROJECTS_DIR: /projects
+      POUNDLOCK_WORK_DIR: /work
+      POUNDLOCK_RESULT_DIR: /results
+      POUNDLOCK_JOB_WALL_SECONDS: "300"
+      POUNDLOCK_RUNNER_CAPACITY: "1"
+    depends_on:
+      controller:
+        condition: service_healthy
+    volumes:
+      - runtime-secrets:/run/poundlock:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - runner-results:/results
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+      - /work:rw,noexec,nosuid,size=2g,uid=10001,gid=10001,mode=0700
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  mock-model:
+    image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+    command: ["python3", "-I", "/srv/mock_model.py", "8080"]
+    volumes:
+      - ./mock_model.py:/srv/mock_model.py:ro
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  controller-state:
+  runtime-secrets:
+  runner-results:

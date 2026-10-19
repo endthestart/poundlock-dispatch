@@ -1,0 +1,146 @@
+# Semgrep rules that fail the build. A rule belongs here only while it has no
+# findings; one with findings lives in report.yml until they are fixed.
+# Written for this repository and licensed with it: no registry rules, so the
+# run is offline and reproducible. Each rule has a positive and a negative
+# control in block.ts (report.ts for report.yml); run them with
+# `cd .semgrep && semgrep --test .` so a rule that never fires is caught.
+rules:
+  - id: dispatch-ts-child-process-exec
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      `exec` and `execSync` run their argument through a shell. Use `spawn` or
+      `execFile` with an argv array.
+    pattern-either:
+      - patterns:
+          - pattern: exec(...)
+          - pattern-either:
+              - pattern-inside: |
+                  import { ..., exec, ... } from "node:child_process";
+                  ...
+              - pattern-inside: |
+                  import { ..., exec, ... } from "child_process";
+                  ...
+              - pattern-inside: |
+                  const { ..., exec, ... } = require("node:child_process");
+                  ...
+      - patterns:
+          - pattern: execSync(...)
+          - pattern-either:
+              - pattern-inside: |
+                  import { ..., execSync, ... } from "node:child_process";
+                  ...
+              - pattern-inside: |
+                  import { ..., execSync, ... } from "child_process";
+                  ...
+              - pattern-inside: |
+                  const { ..., execSync, ... } = require("node:child_process");
+                  ...
+      - patterns:
+          - pattern-either:
+              - pattern: $CP.exec(...)
+              - pattern: $CP.execSync(...)
+          - metavariable-regex:
+              metavariable: $CP
+              regex: ^(cp|child_process|childProcess)$
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-spawn-shell-true
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      A child process is started with a shell option, so its command text is
+      parsed by a shell.
+    patterns:
+      - pattern-either:
+          - pattern: '$F(..., { ..., shell: true, ... })'
+          - pattern: '$F(..., { ..., shell: $S, ... })'
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(spawn|spawnSync|execFile|execFileSync|fork|\w+\.(spawn|spawnSync|execFile|execFileSync))$
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-html-sink
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      Text is written as HTML. Model output and repository text must reach the
+      page through textContent or an escaping renderer.
+    pattern-either:
+      - pattern: '$E.innerHTML = $V'
+      - pattern: '$E.outerHTML = $V'
+      - pattern: '$E.insertAdjacentHTML(...)'
+      - pattern: 'document.write(...)'
+      - pattern: '<$T dangerouslySetInnerHTML={...} />'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-electron-open-external
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      `shell.openExternal` hands a URL to the operating system. Allow only
+      `https:` (and `mailto:`) after parsing the URL, never a string from a model or a page.
+    patterns:
+      - pattern: '$S.openExternal($U)'
+      - pattern-not: '$S.openExternal("...")'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-electron-insecure-web-preferences
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: An Electron web preference that weakens the renderer sandbox is set.
+    pattern-either:
+      - pattern: "{ ..., nodeIntegration: true, ... }"
+      - pattern: "{ ..., nodeIntegrationInWorker: true, ... }"
+      - pattern: "{ ..., nodeIntegrationInSubFrames: true, ... }"
+      - pattern: "{ ..., contextIsolation: false, ... }"
+      - pattern: "{ ..., webSecurity: false, ... }"
+      - pattern: "{ ..., sandbox: false, ... }"
+      - pattern: "{ ..., allowRunningInsecureContent: true, ... }"
+      - pattern: "{ ..., enableRemoteModule: true, ... }"
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-eval
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Code is built from a string at run time.
+    pattern-either:
+      - pattern: 'eval(...)'
+      - pattern: 'new Function(...)'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-tls-verification-off
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Certificate verification is switched off.
+    pattern-either:
+      - pattern: "{ ..., rejectUnauthorized: false, ... }"
+      - pattern: 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-weak-hash
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: MD5 and SHA-1 are not collision resistant; use SHA-256 for anything a decision depends on.
+    pattern-either:
+      - pattern: 'createHash("md5")'
+      - pattern: 'createHash("sha1")'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-plain-http-literal
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      A non-loopback `http://` URL is written in code. A bearer token sent to
+      it crosses the network in clear text; default to https or loopback.
+    pattern-regex: '["`]http://(?!127\.0\.0\.1|localhost|\[::1\]|\$\{)[^"`\n]*["`]'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts", "src/core/memory-poundlock.ts"]

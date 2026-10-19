@@ -1,0 +1,21 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.2.4/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": ["src/**", "tests/**", "scripts/*.ts", "*.ts", "package.json", "biome.json"]
+  },
+  "formatter": { "indentStyle": "space", "lineWidth": 100 },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": false,
+      "correctness": {
+        "noUnreachable": "error",
+        "noInvalidUseBeforeDeclaration": "error",
+        "noUnusedImports": "warn"
+      },
+      "suspicious": { "noDoubleEquals": "error", "noDebugger": "error" }
+    }
+  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+}

@@ -1,0 +1,41 @@
+{
+  "checks": ["node --test"],
+  "scope": { "writable": ["src/", "test/", "README.md"], "protectedPaths": ["package.json"] },
+  "cases": [
+    {
+      "id": "C1",
+      "title": "slugify",
+      "objective": "Add src/slugify.js exporting slugify(text): lower-case the text, replace every run of characters other than a-z and 0-9 with a single '-', and remove leading and trailing '-'. Add test/slugify.test.js with node:test cases for spaces, punctuation and leading or trailing symbols.",
+      "acceptanceCriteria": "slugify('  Hello, World! ') returns 'hello-world', and node --test passes.",
+      "dependsOn": []
+    },
+    {
+      "id": "C2",
+      "title": "titleCase",
+      "objective": "Add src/title-case.js exporting titleCase(text): upper-case the first letter of every word from src/words.js and lower-case the rest, joining the words with single spaces. Add test/title-case.test.js.",
+      "acceptanceCriteria": "titleCase('hELLO   wORLD') returns 'Hello World', and node --test passes.",
+      "dependsOn": ["C1"]
+    },
+    {
+      "id": "C3",
+      "title": "wordCount",
+      "objective": "Add src/word-count.js exporting wordCount(text): the number of words, using words() from src/words.js. Add test/word-count.test.js, including the empty string.",
+      "acceptanceCriteria": "wordCount('') is 0, wordCount(' a b  c ') is 3, and node --test passes.",
+      "dependsOn": ["C2"]
+    },
+    {
+      "id": "C4",
+      "title": "truncate",
+      "objective": "Add src/truncate.js exporting truncate(text, max): the text unchanged when it has at most max characters, otherwise its first max - 1 characters followed by '…'. Add test/truncate.test.js.",
+      "acceptanceCriteria": "truncate('abcdef', 4) returns 'abc…', truncate('abc', 4) returns 'abc', and node --test passes.",
+      "dependsOn": ["C3"]
+    },
+    {
+      "id": "C5",
+      "title": "document the library",
+      "objective": "Add a Usage section to README.md with one line and one example for each of words, slugify, titleCase, wordCount and truncate.",
+      "acceptanceCriteria": "README.md documents all five functions, and node --test passes.",
+      "dependsOn": ["C4"]
+    }
+  ]
+}

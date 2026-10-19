@@ -1,0 +1,51 @@
+{
+  "example": "Indentation only",
+  "model": "synthetic",
+  "transcript": "synthetic: written for this test",
+  "file": "src/pantry/search.py",
+  "content": "\"\"\"Recipe search: filter a recipe list by tags, cook time and pantry.\"\"\"\n\nfrom dataclasses import dataclass, field\n\nSTEP_MINUTES = 5\n\n\n@dataclass\nclass FilterState:\n    tags: set = field(default_factory=set)\n    max_minutes: int | None = None\n    pantry: set = field(default_factory=set)\n    pantry_only: bool = False\n\n\ndef _rounded(minutes: int) -> int:\n    \"\"\"Round up to the slider's steps.\"\"\"\n    return -(-minutes // STEP_MINUTES) * STEP_MINUTES\n\n\ndef _matches(\n    recipe: dict, state: FilterState, cap: int | None\n) -> bool:\n    \"\"\"True when the recipe passes every active filter.\"\"\"\n    if state.tags and not state.tags <= set(recipe[\"tags\"]):\n        return False\n    if cap is not None and recipe[\"minutes\"] > cap:\n        return False\n    if state.pantry_only and not set(recipe[\"needs\"]) <= state.pantry:\n        return False\n    return True\n\n\ndef search(recipes: list[dict], state: FilterState) -> list[dict]:\n    cap = None if state.max_minutes is None else _rounded(state.max_minutes)\n    return [recipe for recipe in recipes if _matches(recipe, state, cap)]\n",
+  "steps": [
+    {
+      "call": 1,
+      "tool": "read"
+    },
+    {
+      "call": 2,
+      "tool": "edit",
+      "edits": [
+        {
+          "oldText": "STEP_MINUTES = 5",
+          "newText": "STEP_MINUTES = 5\nMAX_MINUTES = 240"
+        },
+        {
+          "oldText": "    \"\"\"Round up to the slider's steps.\"\"\"",
+          "newText": "    \"\"\"Round up to the slider's steps, at most MAX_MINUTES.\"\"\""
+        },
+        {
+          "oldText": "    def _matches(\n        recipe: dict, state: FilterState, cap: int | None\n    ) -> bool:",
+          "newText": "def _matches(recipe: dict, state: FilterState, cap: int | None) -> bool:"
+        }
+      ],
+      "piResult": "Could not find edits[2] in src/pantry/search.py. The oldText must match exactly including all whitespace and newlines."
+    },
+    {
+      "call": 3,
+      "tool": "edit",
+      "edits": [
+        {
+          "oldText": "STEP_MINUTES = 5",
+          "newText": "STEP_MINUTES = 5\nMAX_MINUTES = 240"
+        },
+        {
+          "oldText": "    \"\"\"Round up to the slider's steps.\"\"\"",
+          "newText": "    \"\"\"Round up to the slider's steps, at most MAX_MINUTES.\"\"\""
+        },
+        {
+          "oldText": "def _matches(\n    recipe: dict, state: FilterState, cap: int | None\n) -> bool:",
+          "newText": "def _matches(recipe: dict, state: FilterState, cap: int | None) -> bool:"
+        }
+      ],
+      "piResult": "Successfully replaced 3 block(s) in src/pantry/search.py."
+    }
+  ]
+}

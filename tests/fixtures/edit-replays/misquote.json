@@ -1,0 +1,35 @@
+{
+  "example": "A misquote, recovered at once",
+  "model": "synthetic",
+  "transcript": "synthetic: written for this test",
+  "file": "changes/search-filters/decisions.md",
+  "content": "# Search filters: decisions\n\n- **D-01** Filters combine as AND. A tag chip, the slider and pantry-only each\n  narrow the list; none widens it.\n- **D-02** The slider rounds up to five-minute steps, so a recipe listed at\n  23 minutes appears under 25. Cook times in the data stay exact.\n- **D-03** Pantry matching is exact by ingredient name for now. Synonyms\n  (\"scallion\", \"spring onion\") wait for the ingredient index, which is not\n  built yet, so this slice treats them as different ingredients.\n",
+  "steps": [
+    {
+      "call": 1,
+      "tool": "read"
+    },
+    {
+      "call": 2,
+      "tool": "edit",
+      "edits": [
+        {
+          "oldText": "- **D-03** pantry matching is exact by ingredient name for now. Synonyms\n  (\"scallion\", \"spring onion\") wait for the ingredient index, which is not",
+          "newText": "- **D-03** pantry matching is exact by ingredient name for now. Synonyms\n  (\"scallion\", \"spring onion\") wait for the ingredient index (task T6), which is not"
+        }
+      ],
+      "piResult": "Could not find the exact text in changes/search-filters/decisions.md. The old text must match exactly including all whitespace and newlines."
+    },
+    {
+      "call": 3,
+      "tool": "edit",
+      "edits": [
+        {
+          "oldText": "  (\"scallion\", \"spring onion\") wait for the ingredient index, which is not",
+          "newText": "  (\"scallion\", \"spring onion\") wait for the ingredient index (task T6), which is not"
+        }
+      ],
+      "piResult": "Successfully replaced 1 block(s) in changes/search-filters/decisions.md."
+    }
+  ]
+}

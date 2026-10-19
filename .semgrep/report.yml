@@ -1,0 +1,33 @@
+# Semgrep rules that are reported but do not fail the build, because each still
+# has findings to review; CI prints them on every run.
+# When a rule's findings are fixed, move it to block.yml.
+rules:
+  - id: dispatch-ts-shell-dash-c
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      A shell is started with -c. Its command text must be fixed, and every
+      value must reach it as a positional argument.
+    patterns:
+      - pattern-either:
+          - pattern: '$F($SH, ["-c", ...], ...)'
+          - pattern: '$F($SH, ["-lc", ...], ...)'
+          - pattern: '[..., $SH, "-c", ...]'
+          - pattern: '[..., $SH, "-lc", ...]'
+      - metavariable-regex:
+          metavariable: $SH
+          regex: ^["'`](/bin/|/usr/bin/)?(ba|z|da)?sh["'`]$
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: dispatch-ts-process-env-passthrough
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      The whole parent environment is handed to a child process. Pass an
+      allow-listed environment so tokens and keys are not inherited.
+    pattern-either:
+      - pattern: '$F(..., { ..., env: process.env, ... })'
+      - pattern: '$F(..., { ..., env: { ...process.env, ... }, ... })'
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]

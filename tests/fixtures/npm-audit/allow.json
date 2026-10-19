@@ -1,0 +1,7 @@
+{
+  "GHSA-aaaa-aaaa-aaaa": {
+    "expires": "2026-10-21",
+    "reason": "Pinned by a dependency's shrinkwrap."
+  },
+  "GHSA-bbbb-bbbb-bbbb": { "expires": "2999-12-31", "reason": "Development dependency only." }
+}

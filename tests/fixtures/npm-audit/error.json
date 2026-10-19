@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ENOAUDIT",
+    "summary": "Your configured registry does not support audit requests."
+  }
+}

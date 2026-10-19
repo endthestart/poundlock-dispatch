@@ -1,0 +1,7 @@
+Poundlock Dispatch
+Copyright 2026 Michael Anderson
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Third-party components keep their own licenses: THIRD_PARTY_NOTICES.md lists
+them, and the app and the terminal client carry the full texts in
+THIRD_PARTY_LICENSES.md. HISTORY.md says where this code came from.

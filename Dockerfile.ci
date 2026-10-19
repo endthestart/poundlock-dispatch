@@ -1,0 +1,17 @@
+# Pinned by digest (L18); bump the tag and digest together.
+FROM node:22-bookworm@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
+RUN apt-get update && apt-get install -y --no-install-recommends git xvfb xauth libgtk-3-0 libnss3 libgbm1 libasound2 libatk-bridge2.0-0 libdrm2 libxss1 && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+# npm audit exits non-zero whenever it finds anything; the gate decides, and
+# allows only unexpired exceptions listed in security/npm-audit-allow.json.
+RUN npm run lint && npm run typecheck && npm test \
+    && { npm audit --json > /tmp/npm-audit.json || true; } \
+    && node scripts/npm-audit-gate.cjs /tmp/npm-audit.json security/npm-audit-allow.json \
+    && node scripts/license-inventory.cjs
+RUN npm run package:linux
+RUN xvfb-run -a node scripts/package-smoke.cjs release/linux-unpacked/poundlock-dispatch-gui \
+    && node scripts/check-package.cjs release/linux-unpacked
+RUN cd release && sha256sum -- *.tar.gz > SHA256SUMS

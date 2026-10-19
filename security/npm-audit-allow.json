@@ -1,0 +1,6 @@
+{
+  "GHSA-hp3w-g68c-fv3c": {
+    "expires": "2026-11-21",
+    "reason": "sprintf-js 1.1.3 reached only through electron-builder's @electron/get (global-agent, roarr), which downloads Electron at build time; no fixed version is published. Fix: electron-builder 27, whose @electron/get 5 drops global-agent."
+  }
+}

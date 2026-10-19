@@ -1,0 +1,144 @@
+name: CI
+# Pull requests, forks included, run every check here on disposable GitHub-hosted
+# runners with a read-only token and no secrets. Nothing here publishes anything.
+# release.yml runs this same workflow on a version tag and publishes only the
+# packages it built and checked.
+on:
+  push:
+    branches: ["**"] # a tag runs these checks through release.yml
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+jobs:
+  security:
+    # Fast scanners first. Tools are pinned by version and image digest; sources
+    # are streamed into each container. A scanner, database or network failure
+    # fails the job; it is never read as clean.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks scans the whole history
+      - name: Scan for secrets (gitleaks 8.30.1, working tree and history)
+        run: |
+          set -euo pipefail
+          # --redact keeps any finding out of the log; the log shows file, line and commit only.
+          tar cf - . | docker run --rm -i --cpus 1 --memory 1g --memory-swap 1g --pids-limit 128 \
+            --network none --read-only --tmpfs /scan:rw,nosuid,size=2g \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            --entrypoint sh ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f -c '
+              tar xf - -C /scan
+              cd /scan
+              status=0
+              gitleaks dir --no-banner --redact -v --exit-code 1 . || status=1
+              gitleaks git --no-banner --redact -v --exit-code 1 . || status=1
+              exit $status'
+      - name: Scan the lockfile (osv-scanner 2.7.0)
+        run: |
+          set -euo pipefail
+          # Exceptions come from security/npm-audit-allow.json, the file the npm audit gate reads, so each is dated once.
+          python3 scripts/npm-allow-to-osv.py security/npm-audit-allow.json > "$RUNNER_TEMP/osv-scanner.toml"
+          tar cf - package-lock.json -C "$RUNNER_TEMP" osv-scanner.toml | docker run --rm -i --cpus 1 --memory 1g --memory-swap 1g --pids-limit 128 \
+            --read-only --tmpfs /scan:rw,nosuid,size=64m --workdir /scan \
+            --entrypoint sh ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0 -c 'tar xf - -C /scan && /osv-scanner scan source --config osv-scanner.toml --lockfile package-lock.json'
+      - name: Static analysis (Semgrep 1.180.0, own offline rules)
+        run: |
+          set -euo pipefail
+          # No registry rules and no network: the rules live in .semgrep/ and have tests.
+          tar cf - --exclude=.git . | docker run --rm -i --cpus 2 --memory 2g --memory-swap 2g --pids-limit 256 \
+            --network none --read-only --tmpfs /scan:rw,nosuid,size=1g --tmpfs /tmp:rw,nosuid,size=256m -e HOME=/tmp \
+            --entrypoint sh semgrep/semgrep:1.180.0@sha256:529ee8a277ec8adc5b534d7c74eea0a47e9de21d62852b6ba7ac6ba9566845c3 -c '
+              set -eu
+              tar xf - -C /scan
+              cd /scan
+              (cd .semgrep && semgrep --metrics=off --disable-version-check --test .)
+              echo "Reported rules (Semgrep labels every finding Blocking; this step does not fail on them)"
+              semgrep scan --metrics=off --disable-version-check --config .semgrep/report.yml --exclude .semgrep --quiet . || true
+              echo "Blocking rules"
+              semgrep scan --metrics=off --disable-version-check --config .semgrep/block.yml --exclude .semgrep --error --quiet .'
+  linux:
+    # Lint, types, tests, the npm audit gate, notices, the Linux package, a smoke
+    # run under Xvfb and the built-app check, all in Dockerfile.ci.
+    needs: security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build, test, audit, package and smoke the Linux app
+        run: docker build -f Dockerfile.ci -t "dispatch-ci:${GITHUB_SHA}" .
+      - name: Collect the tested package
+        run: |
+          set -euo pipefail
+          ID=$(docker create "dispatch-ci:${GITHUB_SHA}")
+          trap 'docker rm "$ID" >/dev/null' EXIT
+          mkdir -p release
+          docker cp "$ID:/src/release/." release/
+          rm -rf release/linux-unpacked
+      - name: Software bill of materials (Trivy 0.75.0, CycloneDX, production dependencies)
+        run: |
+          set -euo pipefail
+          tar cf - package.json package-lock.json | docker run --rm -i --cpus 1 --memory 1g --memory-swap 1g \
+            --network none --tmpfs /scan:rw,nosuid,size=256m --workdir /scan \
+            --entrypoint sh ghcr.io/aquasecurity/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa -c '
+              set -eu
+              tar xf - -C /scan
+              trivy fs --quiet --offline-scan --skip-db-update --format cyclonedx --output /scan/sbom.json /scan/package-lock.json >&2
+              cat /scan/sbom.json' > release/poundlock-dispatch.cdx.json
+          python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["components"]' release/poundlock-dispatch.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-linux-x86_64
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+  macos:
+    # The macOS app, Apple silicon, as a developer preview: ad-hoc signed, not
+    # notarized. Tests run here too: the attended worker sandbox is macOS-only.
+    needs: security
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+      - name: Install, lint, type-check and test
+        run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm run typecheck
+          npm test
+      - name: Package and check the app
+        run: |
+          set -euo pipefail
+          npm run package
+          node scripts/check-package.cjs "release/mac-arm64/Poundlock Dispatch.app"
+          node scripts/package-smoke.cjs "release/mac-arm64/Poundlock Dispatch.app/Contents/MacOS/Poundlock Dispatch"
+          (cd release && shasum -a 256 -- *.zip > SHA256SUMS-macos)
+      - name: Build and install the terminal client in a scratch home
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          bash scripts/install-tui.sh --bin "$HOME/bin"
+          "$HOME/bin/dispatch" --version
+          test -s "$HOME/.local/share/poundlock-dispatch/tui/current/THIRD_PARTY_LICENSES.md"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-macos-arm64
+          path: |
+            release/*.zip
+            release/SHA256SUMS-macos
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$1" in
+  Username*) printf '%s' "${POUNDLOCK_DISPATCH_GIT_USERNAME:-$LOCKKEEP_GIT_USERNAME}" ;;
+  Password*) printf '%s' "${POUNDLOCK_DISPATCH_GIT_PASSWORD:-$LOCKKEEP_GIT_PASSWORD}" ;;
+  *) printf '%s' "${POUNDLOCK_DISPATCH_GIT_PASSWORD:-$LOCKKEEP_GIT_PASSWORD}" ;;
+esac

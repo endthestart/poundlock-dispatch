@@ -1,0 +1,23 @@
+# gitleaks policy for the release gate. Keep the default ruleset and allow only
+# verified false positives, each scoped to one file and one assignment shape.
+# A real secret is never allowlisted: rotate it, then remove it from history.
+title = "Poundlock Dispatch gitleaks policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic controller token in the terminal client tests; the fake controller is controller.test and the value matches no real Poundlock token shape"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^tests/tui-connect\.test\.ts$''']
+regexTarget = "line"
+regexes = ['''^\s*const TOKEN = "''']
+
+[[allowlists]]
+description = "Synthetic token in the jobs client tests; the fake controller is poundlock.example"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^tests/tui-jobs\.test\.ts$''']
+regexTarget = "line"
+regexes = ['''^\s*const TOKEN = "''']

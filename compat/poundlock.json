@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "tested_with": {
+    "poundlock_version": "0.3.0",
+    "api_major": 1,
+    "contract_revision": 5
+  },
+  "api_major": 1,
+  "minimum_contract_revision": 3,
+  "required_features": [
+    "access_preflight",
+    "availability_reasons",
+    "data_destination",
+    "durable_jobs",
+    "external_invoke_permission",
+    "managed_application_identities",
+    "routing_revision",
+    "usage_summary",
+    "verifier_toolchain"
+  ]
+}

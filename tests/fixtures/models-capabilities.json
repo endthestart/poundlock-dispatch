@@ -1,0 +1,641 @@
+{
+  "object": "list",
+  "poundlock": {
+    "contract_revision": 3,
+    "schema_version": 1
+  },
+  "data": [
+    {
+      "id": "fast-local",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 65536,
+      "context_window": 65536,
+      "context_tokens": 65536,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": "83c9e5db-8f89-497f-ba6d-d33e22266a0b",
+        "runtime_profile": "ollama"
+      },
+      "meta": {
+        "n_ctx": 65536
+      },
+      "poundlock": {
+        "profile_id": "8c39d2ee-6903-43a8-ae5b-7a7da9f7e03c",
+        "canonical_name": "fast-local",
+        "aliases": [],
+        "upstream_model": "example-9b-q8",
+        "model_label": "Example 9B · Q8_0",
+        "endpoint_kind": "openai",
+        "routing_revision": "d94d7fdcf41c2ed896256bbeb51f55bf1939b0172c97bfa571ad04cf4be4be01",
+        "data_destination": "operator_network",
+        "thinking": "off",
+        "uses": ["durable", "interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "on-demand",
+        "context_tokens": 65536,
+        "max_output_tokens": 8192,
+        "n_ctx": 65536,
+        "capabilities": [
+          {
+            "name": "code_repair_verified",
+            "status": "insufficient",
+            "passed": 3,
+            "attempted": 3,
+            "source": "poundlock_toolkit",
+            "toolkit_version": "0.1.1",
+            "run_ids": ["44e607c5-87b8-417b-bb0b-01d086bfc778"],
+            "identity_sha256": "bea235b2a0ab26acfcc18536cfc647f1c34457d6ba0fc4782a9028a20d9604ae",
+            "result_sha256": "be89d0ff00d38174afd524fb0fbbc1b9a7f5050da4a714d3a22116b9c3fd9d7f",
+            "measured_at": "2026-09-20T16:14:11.664449+00:00",
+            "measured_settings": {
+              "context_tokens": 65536,
+              "max_output_tokens": 8192,
+              "reasoning": "off",
+              "harness": "pi"
+            },
+            "note": "",
+            "recorded_at": "2026-09-20T17:13:29.664116623+00:00",
+            "age_days": 0,
+            "stale": false,
+            "settings_match": "exact"
+          },
+          {
+            "name": "plan_tool_schema",
+            "status": "insufficient",
+            "passed": 0,
+            "attempted": 3,
+            "source": "poundlock_toolkit",
+            "toolkit_version": "0.1.1",
+            "run_ids": ["5ba1bd98-78db-4c1e-9a06-6965e4811b6a"],
+            "identity_sha256": "97876a865c181ab0a230a4b0f3d71ceaa43916b9aa13107968eaed9e903a586d",
+            "result_sha256": "0f74a8c358e4b89f6baf298fa2fda8186e5b33891ed995067762b5c964f7585a",
+            "measured_at": "2026-09-20T16:28:00.135644+00:00",
+            "measured_settings": {
+              "context_tokens": 65536,
+              "max_output_tokens": 8192,
+              "reasoning": "off",
+              "harness": "direct"
+            },
+            "note": "Every trial emitted the nested plan as a JSON string rather than an array.",
+            "recorded_at": "2026-09-20T17:13:29.664116623+00:00",
+            "age_days": 0,
+            "stale": false,
+            "settings_match": "exact"
+          },
+          {
+            "name": "sealed_investigation",
+            "status": "insufficient",
+            "passed": 0,
+            "attempted": 3,
+            "source": "poundlock_toolkit",
+            "toolkit_version": "0.1.1",
+            "run_ids": [
+              "a92fa52b-3b41-48b5-9a9b-f59280381de4",
+              "39279a19-7995-4ee7-873c-953cb490044e"
+            ],
+            "identity_sha256": "bea235b2a0ab26acfcc18536cfc647f1c34457d6ba0fc4782a9028a20d9604ae",
+            "result_sha256": "17f94f3bc95c88982635f8788a11ddec853a4696db65b72fc5644f124083694d",
+            "measured_at": "2026-09-20T16:13:17.268284+00:00",
+            "measured_settings": {
+              "context_tokens": 65536,
+              "max_output_tokens": 8192,
+              "reasoning": "off",
+              "harness": "pi"
+            },
+            "note": "Every trial emitted the nested plan as a JSON string rather than an array.",
+            "recorded_at": "2026-09-20T17:13:29.664116623+00:00",
+            "age_days": 0,
+            "stale": false,
+            "settings_match": "exact"
+          }
+        ],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": "83c9e5db-8f89-497f-ba6d-d33e22266a0b",
+          "runtime_profile": "ollama"
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "direct",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "direct",
+      "managed_identity_status": null
+    },
+    {
+      "id": "frontier-large",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 131072,
+      "context_window": 131072,
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 131072
+      },
+      "poundlock": {
+        "profile_id": "13e061d0-796d-4d6f-b248-327067170b31",
+        "canonical_name": "frontier-large",
+        "aliases": [],
+        "upstream_model": "frontier-large",
+        "model_label": "Example large model · provider via LiteLLM",
+        "endpoint_kind": "litellm",
+        "routing_revision": "4e2f360ac32a33d528baa50e1f371e21dca7640d230441d5f2b7402048e4e6b7",
+        "data_destination": "external",
+        "thinking": "model_default",
+        "uses": ["interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "never",
+        "context_tokens": 131072,
+        "max_output_tokens": 8192,
+        "n_ctx": 131072,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "managed_applications",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "managed_applications",
+      "managed_identity_status": null
+    },
+    {
+      "id": "frontier-medium",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 131072,
+      "context_window": 131072,
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 131072
+      },
+      "poundlock": {
+        "profile_id": "1c4c0673-a0f6-4f04-9786-b560a16efc06",
+        "canonical_name": "frontier-medium",
+        "aliases": [],
+        "upstream_model": "frontier-medium",
+        "model_label": "Example medium model · provider via LiteLLM",
+        "endpoint_kind": "litellm",
+        "routing_revision": "10ef852ce214ac260dc06a71a09b9fad9af9ea03990ccf81587e95517700c5c9",
+        "data_destination": "external",
+        "thinking": "model_default",
+        "uses": ["interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "never",
+        "context_tokens": 131072,
+        "max_output_tokens": 8192,
+        "n_ctx": 131072,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "managed_applications",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "managed_applications",
+      "managed_identity_status": null
+    },
+    {
+      "id": "frontier-flash",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 131072,
+      "context_window": 131072,
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 131072
+      },
+      "poundlock": {
+        "profile_id": "5963dbe6-1768-4dfd-bae6-aa9c52cebe1d",
+        "canonical_name": "frontier-flash",
+        "aliases": [],
+        "upstream_model": "frontier-flash",
+        "model_label": "Example flash model · provider via LiteLLM",
+        "endpoint_kind": "litellm",
+        "routing_revision": "aff4cd19b6f5168262c9c99910c215a0dbcf6107f7a42ef88ca450a6101d63fd",
+        "data_destination": "external",
+        "thinking": "model_default",
+        "uses": ["interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "never",
+        "context_tokens": 131072,
+        "max_output_tokens": 8192,
+        "n_ctx": 131072,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "managed_applications",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "managed_applications",
+      "managed_identity_status": null
+    },
+    {
+      "id": "frontier-astra",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 131072,
+      "context_window": 131072,
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 131072
+      },
+      "poundlock": {
+        "profile_id": "f155611b-cbc3-4030-90a0-3bfeb1398005",
+        "canonical_name": "frontier-astra",
+        "aliases": [],
+        "upstream_model": "frontier-astra",
+        "model_label": "Example astra model · provider via LiteLLM",
+        "endpoint_kind": "litellm",
+        "routing_revision": "4f4e02eb2f4a4a6fb5c46fe31d9133cf81d82ac7ed2749aa686dbd4e20bbfbce",
+        "data_destination": "external",
+        "thinking": "model_default",
+        "uses": ["interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "never",
+        "context_tokens": 131072,
+        "max_output_tokens": 8192,
+        "n_ctx": 131072,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "managed_applications",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "managed_applications",
+      "managed_identity_status": null
+    },
+    {
+      "id": "frontier-sol",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 131072,
+      "context_window": 131072,
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 131072
+      },
+      "poundlock": {
+        "profile_id": "52fe96be-512c-4635-bf9c-5bc89dcab95c",
+        "canonical_name": "frontier-sol",
+        "aliases": [],
+        "upstream_model": "frontier-sol",
+        "model_label": "Example sol model · provider via LiteLLM",
+        "endpoint_kind": "litellm",
+        "routing_revision": "70de6e8198e4f64cd2c6e996bc33684a82dba0402016e37c102a888270b451f3",
+        "data_destination": "external",
+        "thinking": "model_default",
+        "uses": ["interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "never",
+        "context_tokens": 131072,
+        "max_output_tokens": 8192,
+        "n_ctx": 131072,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "managed_applications",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "managed_applications",
+      "managed_identity_status": null
+    },
+    {
+      "id": "fim-local",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 4096,
+      "context_window": 4096,
+      "context_tokens": 4096,
+      "max_output_tokens": 128,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 4096
+      },
+      "poundlock": {
+        "profile_id": "d1d58ff1-353a-4f5d-9409-02119bd42dfc",
+        "canonical_name": "fim-local",
+        "aliases": ["predict"],
+        "upstream_model": "example-coder-3b-fim",
+        "model_label": "Example coder 3B · Q4_K_M",
+        "endpoint_kind": "openai",
+        "routing_revision": "e2a4ce797d19920e7352c62d068716bfe6049f0ca5fc4b20ea227953793e2c94",
+        "data_destination": "operator_network",
+        "thinking": "model_default",
+        "uses": ["completion"],
+        "workload_class": "fast-code-completion",
+        "wake_policy": "never",
+        "context_tokens": 4096,
+        "max_output_tokens": 128,
+        "n_ctx": 4096,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "direct",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "direct",
+      "managed_identity_status": null
+    },
+    {
+      "id": "docs-local",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 8192,
+      "context_window": 8192,
+      "context_tokens": 8192,
+      "max_output_tokens": 1024,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": null,
+        "runtime_profile": null
+      },
+      "meta": {
+        "n_ctx": 8192
+      },
+      "poundlock": {
+        "profile_id": "6eb074d5-ca21-459e-a4ee-f00c105af476",
+        "canonical_name": "docs-local",
+        "aliases": ["documents"],
+        "upstream_model": "example-4b",
+        "model_label": "Example 4B · Q4_K_M",
+        "endpoint_kind": "openai",
+        "routing_revision": "b0d9251a4f4b155bfd0463a4ae25d321d4271eede7bae8acafd66aa10a50bd82",
+        "data_destination": "operator_network",
+        "thinking": "model_default",
+        "uses": ["interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "never",
+        "context_tokens": 8192,
+        "max_output_tokens": 1024,
+        "n_ctx": 8192,
+        "capabilities": [],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": null,
+          "runtime_profile": null
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "direct",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "direct",
+      "managed_identity_status": null
+    },
+    {
+      "id": "general-local",
+      "object": "model",
+      "owned_by": "poundlock",
+      "context_length": 131072,
+      "context_window": 131072,
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "occupancy": {
+        "kind": null,
+        "node_id": "6b1fbd11-ff6d-4a54-a7e3-65cbf512a75b",
+        "runtime_profile": "local-general"
+      },
+      "meta": {
+        "n_ctx": 131072
+      },
+      "poundlock": {
+        "profile_id": "bdccf269-7a5f-4c17-9592-33acea65052a",
+        "canonical_name": "general-local",
+        "aliases": ["coding", "large-durable"],
+        "upstream_model": "example-35b-a3b",
+        "model_label": "Example 35B-A3B · Q4_K_S",
+        "endpoint_kind": "openai",
+        "routing_revision": "8753797da5685ff588cb2d7ff8b9beb3676697dc674364c0f1cbdfd9ee4ddc8d",
+        "data_destination": "operator_network",
+        "thinking": "off",
+        "uses": ["durable", "interactive"],
+        "workload_class": "interactive-coding",
+        "wake_policy": "on-demand",
+        "context_tokens": 131072,
+        "max_output_tokens": 8192,
+        "n_ctx": 131072,
+        "capabilities": [
+          {
+            "name": "code_repair_verified",
+            "status": "insufficient",
+            "passed": 3,
+            "attempted": 3,
+            "source": "poundlock_toolkit",
+            "toolkit_version": "0.1.1",
+            "run_ids": ["322ab863-bf3c-45db-9ccf-0e905004e481"],
+            "identity_sha256": "cb10746bf9e0f5ff5e90f502d78ac8e7347f84da3e6b18150687c784d919a719",
+            "result_sha256": "368ba599dcfeeca9f2e5a2620fded8476886a06d05db8ae70070b66c59b2f9fa",
+            "measured_at": "2026-09-20T16:34:16.776856+00:00",
+            "measured_settings": {
+              "context_tokens": 131072,
+              "max_output_tokens": 8192,
+              "reasoning": "off",
+              "harness": "pi"
+            },
+            "note": "",
+            "recorded_at": "2026-09-20T17:11:00.068224871+00:00",
+            "age_days": 0,
+            "stale": false,
+            "settings_match": "exact"
+          },
+          {
+            "name": "plan_tool_schema",
+            "status": "smoke",
+            "passed": 3,
+            "attempted": 3,
+            "source": "poundlock_toolkit",
+            "toolkit_version": "0.1.1",
+            "run_ids": ["95317793-3d58-43a6-b070-456486ebad32"],
+            "identity_sha256": "6f3989712f1e07978d8b5d083a765a83ba8de763930c71cc9e31fb950a7e2654",
+            "result_sha256": "a69802b414f498d17b8c8b463317663ae6da37f7efeb5fc04d4b988fa995fd6f",
+            "measured_at": "2026-09-20T16:35:48.213142+00:00",
+            "measured_settings": {
+              "context_tokens": 131072,
+              "max_output_tokens": 8192,
+              "reasoning": "off",
+              "harness": "direct"
+            },
+            "note": "",
+            "recorded_at": "2026-09-20T17:11:00.068224871+00:00",
+            "age_days": 0,
+            "stale": false,
+            "settings_match": "exact"
+          },
+          {
+            "name": "sealed_investigation",
+            "status": "insufficient",
+            "passed": 3,
+            "attempted": 3,
+            "source": "poundlock_toolkit",
+            "toolkit_version": "0.1.1",
+            "run_ids": [
+              "1abc1d4f-321b-4da8-a6de-7ac1b0d54ac2",
+              "b01c7253-41fd-4da2-b6b5-d14d03c93bb4"
+            ],
+            "identity_sha256": "cb10746bf9e0f5ff5e90f502d78ac8e7347f84da3e6b18150687c784d919a719",
+            "result_sha256": "bf1c2da4236f4c9d066859b99bd6495bc8e262ae10e35000e3be227071625686",
+            "measured_at": "2026-09-20T16:32:43.829973+00:00",
+            "measured_settings": {
+              "context_tokens": 131072,
+              "max_output_tokens": 8192,
+              "reasoning": "off",
+              "harness": "pi"
+            },
+            "note": "",
+            "recorded_at": "2026-09-20T17:11:00.068224871+00:00",
+            "age_days": 0,
+            "stale": false,
+            "settings_match": "exact"
+          }
+        ],
+        "busy": false,
+        "occupancy": {
+          "kind": null,
+          "node_id": "6b1fbd11-ff6d-4a54-a7e3-65cbf512a75b",
+          "runtime_profile": "local-general"
+        },
+        "availability": "blocked",
+        "availability_reason": "inference_permission_required",
+        "blocked_reason": "inference_permission_required",
+        "warning_reason": null,
+        "connection_mode": "direct",
+        "managed_identity_status": null
+      },
+      "availability": "blocked",
+      "availability_reason": "inference_permission_required",
+      "blocked_reason": "inference_permission_required",
+      "warning_reason": null,
+      "connection_mode": "direct",
+      "managed_identity_status": null
+    }
+  ]
+}

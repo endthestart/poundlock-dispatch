@@ -1,0 +1,47 @@
+name: End-to-end
+# Dispatch against a disposable Poundlock and a scripted model server on a
+# GitHub-hosted runner: the connection test, manual durable jobs and an attached
+# task with a real Pi worker. The Poundlock image is pinned by digest in the
+# repository variable POUNDLOCK_E2E_IMAGE (a published Poundlock release), so
+# this repository never needs a Poundlock checkout. No secrets are used.
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  stack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      POUNDLOCK_IMAGE: ${{ vars.POUNDLOCK_E2E_IMAGE }}
+    steps:
+      - name: Require a pinned Poundlock image
+        run: |
+          case "$POUNDLOCK_IMAGE" in
+            *@sha256:*) ;;
+            *) echo "::error::Set the repository variable POUNDLOCK_E2E_IMAGE to a Poundlock image pinned by digest"; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+      - name: Install and build the terminal client
+        run: |
+          npm ci --no-audit --no-fund
+          npm run tui:build
+      - name: Run the end-to-end suite
+        run: node tests/e2e/run.mjs --report e2e-report.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: e2e-report
+          path: e2e-report.json
+          if-no-files-found: warn
+          retention-days: 30

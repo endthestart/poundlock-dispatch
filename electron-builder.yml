@@ -1,0 +1,64 @@
+appId: app.poundlock.dispatch.gui
+productName: Poundlock Dispatch
+copyright: Copyright 2026 Michael Anderson
+asar: true
+beforePack: scripts/before-pack.cjs
+afterPack: scripts/after-pack.cjs
+asarUnpack:
+  - out/preload/**
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  # Type-check output, not app code.
+  - "!out/types-node/**"
+  - "!out/notices/**"
+  - package.json
+  - scripts/git-askpass.sh
+extraResources:
+  - from: scripts/git-askpass.sh
+    to: git-askpass.sh
+  - from: assets/tray
+    to: tray
+  - from: LICENSE
+    to: LICENSE.dispatch.txt
+  - from: NOTICE
+    to: NOTICE.dispatch.txt
+  - from: THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.dispatch.md
+  # Full texts for this platform's dependencies, fonts and theme (npm run notices).
+  - from: out/notices/THIRD_PARTY_LICENSES.md
+    to: THIRD_PARTY_LICENSES.dispatch.md
+  - from: README.md
+    to: README.dispatch.md
+extraMetadata:
+  main: out/main/index.js
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dir
+    - zip
+  # "-" is an ad-hoc signature: no developer identity, but a sealed bundle.
+  # With null, only the linker's per-binary signatures existed, so a copy
+  # downloaded to another Mac failed Gatekeeper as "damaged" — a dead end with
+  # no Open Anyway. Sealed, it gets the ordinary unnotarized-app prompt.
+  identity: "-"
+  hardenedRuntime: false
+  gatekeeperAssess: false
+npmRebuild: false
+# The Electron runtime is the `electron` version in package-lock.json;
+# scripts/check-package.cjs fails a package built with any other.
+# The packaged app is Dispatch and nothing else: it cannot be started as plain
+# Node, or take NODE_OPTIONS or an inspector (L26). ASAR integrity validation
+# and loading only from app.asar wait for a packaging run that verifies them.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+
+linux:
+  executableName: poundlock-dispatch-gui
+  category: Development
+  target:
+    - tar.gz

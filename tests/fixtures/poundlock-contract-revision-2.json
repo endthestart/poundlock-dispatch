@@ -1,0 +1,47 @@
+{
+  "api_major": 1,
+  "contract_revision": 3,
+  "required_features": [
+    "access_preflight",
+    "availability_reasons",
+    "data_destination",
+    "durable_jobs",
+    "external_invoke_permission",
+    "managed_application_identities",
+    "routing_revision",
+    "usage_summary",
+    "verifier_toolchain"
+  ],
+  "interactive_catalog_example": {
+    "id": "frontier-deepseek-flash",
+    "poundlock": {
+      "profile_id": "11111111-1111-1111-1111-111111111111",
+      "canonical_name": "frontier-deepseek-flash",
+      "aliases": ["deepseek-flash"],
+      "data_destination": "external",
+      "routing_revision": "route-a",
+      "endpoint_kind": "litellm",
+      "workload_class": "interactive-coding",
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "busy": false,
+      "availability": "ready",
+      "connection_mode": "managed",
+      "managed_identity_status": "ready"
+    }
+  },
+  "durable_catalog_example": {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "name": "local-coder",
+    "aliases": [],
+    "workload_class": "durable-coding-agent",
+    "data_destination": "operator_network",
+    "routing_revision": "route-b",
+    "context_tokens": 32768,
+    "max_output_tokens": 4096
+  },
+  "preflight_example": {
+    "model": "11111111-1111-1111-1111-111111111111",
+    "operation": "inference"
+  }
+}
