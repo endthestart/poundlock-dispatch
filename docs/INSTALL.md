@@ -19,7 +19,7 @@ command. Install either or both.
 
 ## The desktop app
 
-1. Download `Poundlock Dispatch-<version>-arm64-mac.zip` and `SHA256SUMS` from the
+1. Download `Poundlock.Dispatch-<version>-arm64-mac.zip` and `SHA256SUMS` from the
    release and check the archive: `shasum -a 256 -c SHA256SUMS --ignore-missing`.
 2. Unzip it and drag **Poundlock Dispatch.app** into **Applications**.
 3. Open it once with Control-click → **Open**. This developer preview is signed ad

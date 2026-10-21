@@ -54,7 +54,7 @@ What comes next is in the [roadmap](https://github.com/endthestart/poundlock/blo
 
 [docs/INSTALL.md](docs/INSTALL.md) covers the app, the `dispatch` command, Autopilot's
 VM, upgrades, rollback and removal. In short: unzip the release's
-`Poundlock Dispatch-<version>-arm64-mac.zip`, move the app to Applications and open
+`Poundlock.Dispatch-<version>-arm64-mac.zip`, move the app to Applications and open
 it once with Control-click → **Open**. Do not turn Gatekeeper off. The terminal client
 needs Node.js 22.19.0 or newer and installs from a checkout of the release tag with
 `scripts/install-tui.sh`.
