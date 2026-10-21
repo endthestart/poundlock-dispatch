@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (20 October 2026)
 
 The first public release, a developer preview. Autopilot is a preview. Tested with
 Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
