@@ -52,6 +52,14 @@ and `dispatch --version` names the build. `--bin DIR` installs the command
 elsewhere and `--node PATH` picks a different Node; the desktop app finds the client
 for Autopilot either way.
 
+Tab completion for its commands, once per shell:
+
+```sh
+dispatch completion fish > ~/.config/fish/completions/dispatch.fish
+dispatch completion zsh > ~/.dispatch-completion.zsh    # and add: source ~/.dispatch-completion.zsh to ~/.zshrc
+dispatch completion bash > ~/.local/share/bash-completion/completions/dispatch
+```
+
 ## Autopilot's VM (optional, preview)
 
 Autopilot, started from the app or with `dispatch autopilot`, runs unattended work in

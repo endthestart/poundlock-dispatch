@@ -3,7 +3,7 @@
  * terminal window included, so it releases the folder it drives.
  */
 import { EventEmitter } from "node:events";
-import { closeOnSignals } from "@tui/index";
+import { closeOnSignals } from "@tui/open-client";
 import { expect, it, vi } from "vitest";
 
 const processLike = () => Object.assign(new EventEmitter(), { stdout: new EventEmitter() });

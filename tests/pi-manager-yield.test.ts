@@ -6,6 +6,7 @@ import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { compileTaskHints } from "@core/task-hints";
 import { compactionReserve, createPiManager } from "@runtime/pi-manager";
+import { pointsAbove } from "@shared/unseen-question";
 import { describe, expect, it, vi } from "vitest";
 import { tempDir } from "./support/temp-dir";
 
@@ -266,6 +267,51 @@ it("runs no tool call from a reply cut off at the output limit, and says why", a
     },
   );
 }, 15000);
+
+function askCall(question: string) {
+  return {
+    delta: {
+      role: "assistant",
+      tool_calls: [
+        {
+          index: 0,
+          id: `ask-${question.length}`,
+          type: "function",
+          function: { name: "ask_user", arguments: JSON.stringify({ question }) },
+        },
+      ],
+    },
+    finishReason: "tool_calls",
+  };
+}
+
+it("sends back, once, a question that points at questions the owner never saw", async () => {
+  // A frontier manager wrote its seven questions only in its thinking.
+  await withSyntheticManager(
+    (request) =>
+      request === 1
+        ? askCall("Please answer 1–7 above, or reply defaults.")
+        : askCall("1. One user or several? 2. Which catalog?"),
+    async (manager, project, folder, requests) => {
+      const host = {
+        askUser: vi.fn(async () => "Waiting for the user."),
+      } as unknown as ManagerToolHost;
+      await manager.runTurn({ project, workspace: folder, prompt: "Build a sky planner", host });
+      expect(host.askUser).toHaveBeenCalledOnce();
+      expect(host.askUser).toHaveBeenCalledWith(
+        "1. One user or several? 2. Which catalog?",
+        undefined,
+      );
+      expect(JSON.stringify(requests[1].messages)).toContain("never your thinking");
+    },
+  );
+}, 15000);
+
+it("passes a question about things above the horizon", () => {
+  expect(pointsAbove("Should targets below 20° above the horizon be hidden?")).toBe(false);
+  expect(pointsAbove("Please answer 1–7 above.")).toBe(true);
+  expect(pointsAbove("Reply to the questions above, or say defaults.")).toBe(true);
+});
 
 it("corrects a cut-off plan and then an invalid one, each once", async () => {
   await withSyntheticManager(

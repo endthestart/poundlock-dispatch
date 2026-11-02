@@ -16,7 +16,7 @@ import {
 import type { AppStateView } from "@shared/types";
 import { matchProfile } from "./project-model.js";
 
-export const LADDER_USAGE = [
+const LADDER_USAGE = [
   "Usage: /ladder, or /ladder with one of:",
   "  add <profile>   remove <rung>   up <rung>   down <rung>",
   "  ask   standing   limit <1-20>",

@@ -32,6 +32,10 @@ export class IsolationUnavailableError extends Error {
   }
 }
 
+/** The first line of a call that is the Docker client's own, never the command's. */
+const CLIENT_LINE =
+  /^(Error response from daemon:|Cannot connect to the Docker daemon|failed to connect to the docker API|error during connect)/i;
+
 /**
  * Whether a failed call was the Docker client failing, not the command: its
  * first line is the client's own, and the command's output cannot be.
@@ -40,9 +44,35 @@ export function isRuntimeFailure(result: IsolationResult): boolean {
   if (result.exitCode === 0) return false;
   if (result.error?.includes("is not installed")) return true;
   const first = result.output.trimStart().split("\n")[0] ?? "";
-  return /^(Error response from daemon:|Cannot connect to the Docker daemon|failed to connect to the docker API|error during connect)/i.test(
-    first,
-  );
+  return CLIENT_LINE.test(first);
+}
+
+/**
+ * A command's output as it streams, except a first line that is the Docker client's
+ * own. A worker read "container … is not running" at the top of a command that then
+ * ran, once the container was started again, and took it for a dead sandbox. The
+ * line stays in the result, where isRuntimeFailure finds it.
+ */
+function withoutClientLine(onData: (chunk: Buffer) => void) {
+  let head: Buffer | undefined = Buffer.alloc(0);
+  const release = (final: boolean) => {
+    if (!head) return;
+    const end = head.indexOf(10);
+    if (end < 0 && !final) return;
+    const first = end < 0 ? head : head.subarray(0, end + 1);
+    const rest = end < 0 ? Buffer.alloc(0) : head.subarray(end + 1);
+    head = undefined;
+    if (!CLIENT_LINE.test(first.toString("utf8").trimStart())) onData(first);
+    if (rest.length) onData(rest);
+  };
+  return {
+    write(chunk: Buffer) {
+      if (!head) return onData(chunk);
+      head = Buffer.concat([head, chunk]);
+      release(false);
+    },
+    end: () => release(true),
+  };
 }
 
 export interface AutoIsolation {
@@ -108,7 +138,10 @@ export interface DockerIsolationOptions {
 const OUTPUT_LIMIT = 64_000;
 /** Killing what runs in the container must not hang a runner whose VM hangs. */
 const KILL_TIMEOUT_MS = 30_000;
-/** Run as the container's user, `kill -1` reaches every process of it except PID 1 (the keeper). */
+/**
+ * Run as the container's user, `kill -1` reaches every process of it except PID 1. That is
+ * the init, so the keeper dies too and the container stops until it is started again.
+ */
 const KILL_ALL = "kill -9 -1 2>/dev/null; true";
 
 function defaultUser(): string {
@@ -575,18 +608,22 @@ export function dockerIsolation(given: DockerIsolationOptions): AutoIsolation {
     },
 
     async exec(command, exec) {
-      const result = await call(
-        // The worker's own command line, run by design inside the run's isolated
-        // container; no host value is put into its text.
-        // nosemgrep: dispatch-ts-shell-dash-c
-        ["exec", "-w", exec.cwd, "-e", "HOME=/tmp", options.name, "bash", "-c", command],
-        {
-          signal: exec.signal,
-          timeoutMs: exec.timeoutMs,
-          onData: exec.onData,
-          onStop: killAll,
-        },
-      );
+      const stream = exec.onData ? withoutClientLine(exec.onData) : undefined;
+      const run = () =>
+        call(
+          // The worker's own command line, run by design inside the run's isolated
+          // container; no host value is put into its text.
+          // nosemgrep: dispatch-ts-shell-dash-c
+          ["exec", "-w", exec.cwd, "-e", "HOME=/tmp", options.name, "bash", "-c", command],
+          {
+            signal: exec.signal,
+            timeoutMs: exec.timeoutMs,
+            onData: stream?.write,
+            onStop: killAll,
+          },
+        );
+      const result = await run();
+      stream?.end();
       return { exitCode: result.code, output: result.output, error: result.error };
     },
 

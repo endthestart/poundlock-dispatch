@@ -151,7 +151,8 @@ code {
   font-weight: 600;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: var(--faint);
+  /* Muted: these sit on the window's canvas, where faint was 4.19:1 in Latte (UX audit, 30 Oct). */
+  color: var(--muted);
 }
 .sidebar .section-head h2::before,
 .panel-head h2::before,
@@ -210,6 +211,8 @@ button.small {
 button.danger {
   color: var(--state-fault-text);
   border-color: var(--danger-line);
+  /* On the panel tone, not the raised fill, where its red was 4.35:1 in Latte. */
+  background: var(--s2);
 }
 button.danger.solid {
   background: var(--danger-solid);
@@ -2171,12 +2174,13 @@ button.composer-infolet-action {
 .autopilot-stage {
   display: inline-block;
   min-width: 6.5em;
-  color: var(--state-unknown);
+  /* Text takes the -text roles (4.5:1); the bare state colours are indicators (3:1). */
+  color: var(--state-unknown-text);
 }
 .autopilot-cases li[data-stage="accepted"] .autopilot-stage {
-  color: var(--state-ok);
+  color: var(--state-ok-text);
 }
 .autopilot-cases li[data-stage="blocked"] .autopilot-stage,
 .autopilot-cases li[data-stage="abandoned"] .autopilot-stage {
-  color: var(--state-fault);
+  color: var(--state-fault-text);
 }

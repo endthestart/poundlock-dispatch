@@ -2,12 +2,12 @@
 import { createWebTools } from "@runtime/web-tools";
 import type { WebCallRecord } from "@shared/web-search";
 
-export const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+export const json = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json", ...headers },
   });
-export const page = (body: string, status = 200, type = "text/html; charset=utf-8") =>
+export const page = (body: string, status = 200, type = "text/html; charset=utf-8"): Response =>
   new Response(body, { status, headers: { "content-type": type } });
 
 export function harness(

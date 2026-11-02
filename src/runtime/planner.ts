@@ -5,7 +5,7 @@
  * plan a milestone's tasks and to review a finished milestone.
  */
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type { PoundlockCapabilities } from "@core/capabilities";
 import { isTestFile } from "@core/frozen-tests";
 import { runGit } from "@core/git";
@@ -16,6 +16,7 @@ import {
   frozenDecisionPrompt,
   MAX_PLANNED_TASKS,
   milestonePlanPrompt,
+  milestoneRequirements,
   milestoneReviewPrompt,
   PLANNER_SYSTEM_PROMPT,
   type PlannerAnswer,
@@ -23,6 +24,7 @@ import {
   trimPlan,
 } from "@core/goal/planner-prompts";
 import { sourceProblems } from "@core/goal/research";
+import { reviewDepthProblems } from "@core/goal/review-depth";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { OUTPUT_LIMIT, runWorkerTurn, workerResponseError } from "@runtime/pi-worker";
 import {
@@ -34,8 +36,21 @@ import { workerProviderOptions } from "@runtime/poundlock-provider";
 import { createDispatchPiSession } from "@runtime/sessions";
 import { WEB_TOOL_NAMES, type WebTools, webToolDefinitions } from "@runtime/web-tools";
 import { isSpendingRefusal, type ModelFallback } from "@shared/spending-limit";
-import type { InteractiveModel, Milestone, ProjectRecord, ReasoningChoice } from "@shared/types";
+import type {
+  InteractiveModel,
+  Milestone,
+  ProjectRecord,
+  ReasoningChoice,
+  ReasoningLevel,
+} from "@shared/types";
 import { Type } from "typebox";
+
+/**
+ * The level a run's Planner reasons at. One milestone review replayed on the same inputs:
+ * medium named more of the known defects than the default did, for $2.03 against $2.76;
+ * low cost $0.15 but read 5 files and named none of them.
+ */
+export const PLANNER_REASONING: ReasoningLevel = "medium";
 
 export interface PlannerOptions {
   controllerUrl: string;
@@ -156,6 +171,24 @@ const AnswerSchema = Type.Object({
         Type.Literal("not shown"),
       ]),
       note: Type.String(),
+      scenarios: Type.Optional(
+        Type.Array(
+          Type.Object({
+            scenario: Type.Number(),
+            files: Type.Array(Type.String()),
+            finding: Type.String(),
+          }),
+        ),
+      ),
+      promises: Type.Optional(
+        Type.Array(
+          Type.Object({
+            promise: Type.String(),
+            files: Type.Array(Type.String()),
+            finding: Type.String(),
+          }),
+        ),
+      ),
     }),
   ),
   complete: Type.Boolean(),
@@ -216,6 +249,12 @@ async function keepCutOff(dir: string, index: number, messages: unknown[]): Prom
   });
 }
 
+/** A connection that broke mid-call, as the provider's stream or the HTTP client reports it. */
+export const isDroppedConnection = (reason: string) =>
+  /^ambiguous_inference: The provider stream ended|^Connection error/.test(reason);
+/** Dropped connections one Planner call gets past. */
+const MAX_DROPS = 2;
+
 /** How many tasks a cut-off Planner is asked for, the first time and after. */
 const PART_TASKS = [8, 4];
 
@@ -231,7 +270,11 @@ export function createPlanner(options: PlannerOptions): Planner {
     unfinished: string[] = [],
     blocked: string[] = [],
     /** More problems the answer must be free of: a gating Planner's acceptance tests. */
-    moreProblems: (answer: PlannerAnswer, cut: boolean) => string[] = () => [],
+    moreProblems: (
+      answer: PlannerAnswer,
+      cut: boolean,
+      wasRead: (path: string) => boolean,
+    ) => string[] = () => [],
   ): Promise<PlannerAnswer> => {
     const pi = await import("@earendil-works/pi-coding-agent");
     const dir = join(options.dir, String(++calls));
@@ -269,12 +312,20 @@ export function createPlanner(options: PlannerOptions): Planner {
     let allowance = maxCalls;
     let refused = 0;
     let rejected: string | undefined;
+    const projectPath = (path: string) =>
+      relative(options.worktree, resolve(options.worktree, path));
+    const readFiles = new Set<string>();
     const { session } = await createDispatchPiSession({
       cwd: options.worktree,
       agentDir: dir,
       sessionDir: join(dir, "session"),
       model,
-      reasoning: options.reasoning,
+      // Only a level this model lists: the local fallback may list none.
+      reasoning: (model.reasoningLevels as readonly string[] | undefined)?.includes(
+        options.reasoning ?? "",
+      )
+        ? options.reasoning
+        : undefined,
       controllerUrl: options.controllerUrl,
       token: options.token,
       systemPrompt: options.web
@@ -333,6 +384,8 @@ export function createPlanner(options: PlannerOptions): Planner {
         // Also told at two thirds of its tool calls.
         (pi: ExtensionAPI) =>
           pi.on("tool_result", (event) => {
+            if (event.toolName === "read" && !event.isError)
+              readFiles.add(projectPath(String(event.input.path)));
             const left = maxMs - (Date.now() - startedAt - waitedMs);
             const callsLeft = allowance - toolCalls;
             if (warnedTime || (left > maxMs / 2 && callsLeft > maxCalls / 3)) return undefined;
@@ -391,6 +444,7 @@ export function createPlanner(options: PlannerOptions): Planner {
       );
       let last = await runWorkerTurn(session, prompt);
       let cutOffs = 0;
+      let drops = 0;
       for (let round = 0; round <= CORRECTIONS; round++) {
         if (signal?.aborted) throw fail("The Planner was stopped.");
         if (bounded) throw fail(bounded);
@@ -411,7 +465,7 @@ export function createPlanner(options: PlannerOptions): Planner {
           }
           const problems = [
             ...answerProblems(answer, milestone, kind, unfinished, blocked),
-            ...moreProblems(answer, cut),
+            ...moreProblems(answer, cut, (path) => readFiles.has(projectPath(path))),
           ];
           if (!problems.length) return { ...answer, costUsd: sessionCost(session.messages) };
           if (round === CORRECTIONS)
@@ -432,6 +486,18 @@ export function createPlanner(options: PlannerOptions): Planner {
         const cutOff = failed === OUTPUT_LIMIT;
         // What ran long is otherwise lost with the session: keep its ends beside the call.
         if (cutOff) await keepCutOff(dir, cutOffs, session.messages).catch(() => undefined);
+        // Planner calls only read, so asking again is safe, and the session keeps what it read:
+        // a reset connection ended a BM-D review replay four minutes in (2 Nov).
+        if (failed && isDroppedConnection(failed) && drops < MAX_DROPS) {
+          drops++;
+          round--;
+          options.onActivity?.("Planner: the provider dropped the connection; asking again");
+          last = await runWorkerTurn(
+            session,
+            "The connection dropped before your reply arrived. Carry on, and call submit when you are ready.",
+          );
+          continue;
+        }
         if (failed && failed !== "Incomplete model response" && !cutOff) throw fail(failed);
         if (round === CORRECTIONS) throw fail(cutOff ? failed : "The Planner did not call submit.");
         last = await runWorkerTurn(
@@ -467,9 +533,12 @@ export function createPlanner(options: PlannerOptions): Planner {
   const checks = async (spec: PlannerSpec, milestone: Milestone, kind: "plan" | "review") => {
     const tracked = spec.acceptanceFirst ? await trackedFiles(options.worktree) : [];
     const web = spec.research ? options.web : undefined;
-    return (answer: PlannerAnswer, cut: boolean) => [
+    return (answer: PlannerAnswer, cut: boolean, wasRead: (path: string) => boolean) => [
       ...(spec.acceptanceFirst
         ? acceptanceProblems(answer, milestone, tracked, kind === "plan" && !cut)
+        : []),
+      ...(spec.acceptanceFirst && kind === "review"
+        ? reviewDepthProblems(answer, milestoneRequirements(spec, milestone), wasRead)
         : []),
       ...(web ? sourceProblems(answer, (url) => web.read(url)) : []),
     ];

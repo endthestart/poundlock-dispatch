@@ -32,6 +32,11 @@ describe("manager conversation contract", () => {
     expect(MANAGER_SYSTEM_PROMPT).toContain("do not restart discovery");
   });
 
+  it("asks for milestones on a plan of more than about 8 tasks", () => {
+    // A 14-task plan with none had every review read the whole product.
+    expect(MANAGER_SYSTEM_PROMPT).toContain("A plan of more than about 8 tasks");
+  });
+
   it("asks every open question the main job turns on, and names its own choices", () => {
     // Two interviews each asked two questions, then chose the alignment
     // model, the input format and what to do with a bad frame unasked.

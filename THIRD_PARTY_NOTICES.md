@@ -36,6 +36,7 @@ Generated from the production dependency installation. Each package keeps its ow
 | @earendil-works/pi-tui | 1.1.0 | MIT |
 | @esbuild/darwin-x64 | 0.28.2 | MIT |
 | @google/genai | 2.21.0 | Apache-2.0 |
+| @isaacs/nonrecursive-glob-match | 1.0.3 | BlueOak-1.0.0 |
 | @protobufjs/aspromise | 1.1.2 | BSD-3-Clause |
 | @protobufjs/base64 | 1.1.2 | BSD-3-Clause |
 | @protobufjs/codegen | 2.0.5 | BSD-3-Clause |
@@ -97,7 +98,7 @@ Generated from the production dependency installation. Each package keeps its ow
 | long | 5.3.2 | Apache-2.0 |
 | lru-cache | 11.4.0 | BlueOak-1.0.0 |
 | marked | 18.0.11 | MIT |
-| minimatch | 10.2.6 | BlueOak-1.0.0 |
+| minimatch | 11.0.1 | BlueOak-1.0.0 |
 | ms | 2.1.3 | MIT |
 | node-domexception | 1.0.0 | MIT |
 | node-fetch | 3.3.2 | MIT |

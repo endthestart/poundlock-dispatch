@@ -16,11 +16,12 @@ import { TOOL_TRUST_MODES } from "@shared/permissions";
 import { EXECUTION_ROLES } from "@shared/roles";
 import { REASONING_LEVELS } from "@shared/types";
 import { type CommandDef, firstWordCompletions } from "./command-def.js";
+import { roleName } from "./model-detail.js";
 import { SETTINGS_COMMAND_DEFS } from "./settings-commands.js";
 
 /** `/role <role> <profile>`: complete the role, never the profile. */
 export function roleArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
-  return firstWordCompletions(argumentText, EXECUTION_ROLES);
+  return firstWordCompletions(argumentText, EXECUTION_ROLES.map(roleName));
 }
 
 /** `/reasoning [setting|default]`. */
@@ -44,7 +45,7 @@ export const NETWORK_CHOICES = {
   none: { internet: false, localNetwork: false },
 } as const;
 
-export function networkArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
+function networkArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
   return firstWordCompletions(argumentText, Object.keys(NETWORK_CHOICES));
 }
 
@@ -58,7 +59,7 @@ export function isTranscriptDensity(value: string): value is TranscriptDensity {
   return Object.hasOwn(TRANSCRIPT_DENSITY, value);
 }
 
-export function transcriptArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
+function transcriptArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
   return firstWordCompletions(argumentText, Object.keys(TRANSCRIPT_DENSITY));
 }
 
@@ -70,6 +71,7 @@ export function grantArgumentCompletions(argumentText: string): AutocompleteItem
 }
 
 export const COMMAND_DEFS: CommandDef[] = [
+  { name: "/help", description: "List these commands." },
   { name: "/board", description: "Show the plan and task board." },
   { name: "/setup", description: "Show connection and role setup." },
   {
@@ -122,8 +124,8 @@ export const COMMAND_DEFS: CommandDef[] = [
   },
   {
     name: "/role",
-    description: "Bind a role to a profile.",
-    argumentHint: "<role> <profile>",
+    description: "Bind a role to a profile; with no profile, choose one from a list.",
+    argumentHint: "<role> [profile]",
     getArgumentCompletions: roleArgumentCompletions,
   },
   {
@@ -257,4 +259,16 @@ export function toSlashCommands(defs: readonly CommandDef[]): SlashCommand[] {
     argumentHint: def.argumentHint,
     getArgumentCompletions: def.getArgumentCompletions,
   }));
+}
+
+/** Every command with its argument and what it does, for `/help`. */
+export function commandHelp(): string {
+  const heads = COMMAND_DEFS.map((def) =>
+    def.argumentHint ? `${def.name} ${def.argumentHint}` : def.name,
+  );
+  const width = Math.max(...heads.map((head) => head.length)) + 2;
+  return [
+    "Commands (typing / completes them):",
+    ...COMMAND_DEFS.map((def, index) => `  ${heads[index].padEnd(width)}${def.description}`),
+  ].join("\n");
 }

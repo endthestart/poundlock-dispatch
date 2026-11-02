@@ -7,7 +7,7 @@
  */
 import type { AppStateView, LocalManagerSettings } from "@shared/types";
 
-export const LOCAL_MANAGER_USAGE =
+const LOCAL_MANAGER_USAGE =
   "Usage: /local-manager, /local-manager off, or /local-manager on <model> [address] [--context <tokens>] [--output <tokens>]";
 
 const DEFAULT_ADDRESS = "http://127.0.0.1:11434";

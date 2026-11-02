@@ -180,6 +180,8 @@ class ActivityRow implements TranscriptRow {
   constructor(
     private readonly entry: LiveWorkEntry,
     private readonly colours: Colours,
+    /** Earlier steps Normal folded into this one. */
+    private readonly hidden = 0,
   ) {}
 
   update(): void {}
@@ -191,8 +193,11 @@ class ActivityRow implements TranscriptRow {
       hour: "numeric",
       minute: "2-digit",
     });
+    const folded = this.hidden
+      ? ` · ${this.hidden} earlier ${this.hidden === 1 ? "step" : "steps"} hidden; /transcript verbose shows them`
+      : "";
     return [
-      ...wrap(`${clock}  ${displaySafe(this.entry.text)}`, width - 2).map((line, index) =>
+      ...wrap(`${clock}  ${displaySafe(this.entry.text)}${folded}`, width - 2).map((line, index) =>
         this.colours.paint("faint", index === 0 ? `· ${line}` : `  ${line}`),
       ),
       "",
@@ -241,7 +246,9 @@ export class TranscriptView {
     this.order = [];
     for (const item of timeline) {
       const key =
-        item.kind === "message" ? item.message.id : `activity:${item.entry.at}:${item.entry.text}`;
+        item.kind === "message"
+          ? item.message.id
+          : `activity:${item.entry.at}:${item.entry.text}:${item.hidden ?? 0}`;
       seen.add(key);
       this.order.push(key);
       let row = this.rows.get(key);
@@ -249,7 +256,7 @@ export class TranscriptView {
         row =
           item.kind === "message"
             ? createRow(item.message, this.theme, this.colours)
-            : new ActivityRow(item.entry, this.colours);
+            : new ActivityRow(item.entry, this.colours, item.hidden);
         this.rows.set(key, row);
       }
       if (item.kind === "message") row.update(item.message, density);

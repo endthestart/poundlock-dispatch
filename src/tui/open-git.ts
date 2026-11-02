@@ -13,7 +13,7 @@ export interface GitOpen {
   forge?: ForgeKind;
 }
 
-export const GIT_USAGE =
+const GIT_USAGE =
   "Usage: dispatch --git <https url> --branch <name or commit> [--account github|gitea]";
 
 /** `--git`, `--branch` and `--account` from the command line, or nothing when `--git` is absent. */

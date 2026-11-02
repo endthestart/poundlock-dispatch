@@ -696,6 +696,118 @@ describe("auto engine", () => {
     expect(seen[0].frozenTests).toEqual(["test_utils.txt"]);
   });
 
+  it("sends back a manifest that depends on a folder Git ignores", async () => {
+    const env = await setup();
+    await write(env.worktree, ".gitignore", "/.cargo-home\n");
+    git(env.worktree, "add", ".gitignore");
+    git(env.worktree, "commit", "-qm", "ignore the cache");
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+        await write(
+          i.worktree,
+          "Cargo.toml",
+          '[dependencies]\ntempfile = { path = ".cargo-home/registry/src/tempfile-3.27.0" }\n',
+        );
+        return { finish: "done", summary: "wrote it" };
+      }),
+    ).start(spec([cases[0]]));
+    const scope = (await env.ledger.read()).flatMap((e) =>
+      e.event.type === "scope" ? e.event.violations : [],
+    );
+    expect(scope).toContain(
+      "Cargo.toml: .cargo-home/registry/src/tempfile-3.27.0 (depends on a path outside what Git keeps)",
+    );
+    expect((await env.ledger.state()).cases[0].stage).not.toBe("accepted");
+  });
+
+  it("sends a passing case back once when its tests miss its criteria", async () => {
+    const env = await setup();
+    const seen: CaseAttemptInput[] = [];
+    const asked: string[][] = [];
+    const outcome = await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, `${i.attempt}\n`);
+        await write(i.worktree, "c.test.ts", "expect(1).toBe(1);\n");
+        return { finish: "done", summary: "wrote it" };
+      }, seen),
+      {
+        taskCheck: async (input) => {
+          asked.push(input.tests.map((test) => test.path));
+          return ["No test checks 12:25."];
+        },
+      },
+    ).start(spec([cases[0]]));
+    expect(outcome).toBe("objective_met");
+    expect(asked).toEqual([["c.test.ts"]]);
+    expect(seen).toHaveLength(2);
+    expect(seen[1].repairFindings).toContain("No test checks 12:25.");
+    expect(seen[1].fresh).toBe(false);
+    expect((await env.ledger.state()).cases[0].stage).toBe("accepted");
+  });
+
+  it("never costs a passing case when the task check fails or time is short", async () => {
+    const env = await setup();
+    const seen: CaseAttemptInput[] = [];
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+        return { finish: "done", summary: "wrote it" };
+      }, seen),
+      {
+        taskCheck: async () => {
+          throw new Error("no answer");
+        },
+      },
+    ).start(spec([cases[0]]));
+    expect(seen).toHaveLength(1);
+    expect((await env.ledger.state()).cases[0].stage).toBe("accepted");
+    const entry = (await env.ledger.read()).find((e) => e.event.type === "task_check")?.event;
+    expect(entry).toMatchObject({ gaps: [], error: "no answer" });
+
+    // With too little of its allowance left, a send-back would abandon work that passed.
+    const short = await setup();
+    const shortSeen: CaseAttemptInput[] = [];
+    let now = Date.parse("2026-11-01T00:00:00Z");
+    await engine(
+      short,
+      worker(async (i) => {
+        now += 50 * 60_000;
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+        return { finish: "done", summary: "wrote it" };
+      }, shortSeen),
+      { clock: () => new Date(now), taskCheck: async () => ["A gap."] },
+    ).start(spec([cases[0]]));
+    expect(shortSeen).toHaveLength(1);
+    expect((await short.ledger.state()).cases[0].stage).toBe("accepted");
+  });
+
+  it("passes on a worker's lessons only once its task is accepted", async () => {
+    // An abandoned worker's guess ("render with stars hangs in the container") was
+    // passed on as fact; its own test had failed to place its stars.
+    const env = await setup();
+    const seen: CaseAttemptInput[] = [];
+    await engine(
+      env,
+      worker(async (i) => {
+        const first = i.case.id === "C1";
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, first ? "BUG\n" : "ok\n");
+        return {
+          finish: "done",
+          summary: "wrote it",
+          learnings: [first ? "Rendering hangs in the container." : "Use the shared helper."],
+        };
+      }, seen),
+    ).start(spec([cases[0], { ...cases[1], dependsOn: [] }]));
+    const later = seen.filter((i) => i.case.id === "C2");
+    expect(later).toHaveLength(1);
+    expect(later[0].learnings.join("\n")).not.toContain("Rendering hangs");
+    expect(later[0].learnings.join("\n")).toMatch(/"first" was not accepted/);
+  });
+
   it("reports accepted work when a later case is abandoned and nothing else can run", async () => {
     const env = await setup();
     const three = [...cases, { ...cases[1], id: "C3", title: "third", dependsOn: ["C2"] }];

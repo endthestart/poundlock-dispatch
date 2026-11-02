@@ -220,4 +220,16 @@ describe("acceptance first in the Planner's answer", () => {
     expect(milestonePlanPrompt(plannerSpec(plan, [], 90, true), M1, [])).toContain(rule);
     expect(milestonePlanPrompt(plannerSpec(plan, [], 90, false), M1, [])).not.toContain(rule);
   });
+
+  it("asks for a truth more accurate than the tolerance it checks", () => {
+    // A frozen test's short precession formula was 4.6 min off at Polaris, against 3 min.
+    const plan = {
+      summary: "a sky planner",
+      requirements: [],
+      milestones: [M1],
+    } as unknown as PlanRecord;
+    expect(milestonePlanPrompt(plannerSpec(plan, [], 90, true), M1, [])).toContain(
+      "must be accurate well within that tolerance for every input it uses",
+    );
+  });
 });

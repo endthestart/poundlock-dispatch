@@ -16,7 +16,7 @@ import type { CatalogProfile } from "@shared/roles";
 import type { ProjectRecord } from "@shared/types";
 import { matchProfile } from "./project-model.js";
 
-export const PERMISSIONS_USAGE = [
+const PERMISSIONS_USAGE = [
   "Usage: /permissions, or /permissions with one of:",
   `  default <${TOOL_TRUST_MODES.map((mode) => mode.id).join("|")}>   fix-rounds <0-${MAX_FIX_ROUNDS_SETTING}>`,
   "  reviewer <profile|auto>   qualify <profile>   unqualify <profile>",

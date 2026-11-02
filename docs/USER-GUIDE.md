@@ -13,7 +13,8 @@ folder opened in one appears in the other.
 
 - **Desktop:** **+** next to Projects, then **Folder on this Mac** or **Git
   repository** (an HTTPS URL and a branch or commit).
-- **Terminal:** run `dispatch` in the folder, or `dispatch path/to/folder`.
+- **Terminal:** run `dispatch` in the folder, or `dispatch path/to/folder`. A Git
+  repository is `dispatch --git <https url> --branch <name or commit>`.
 
 A folder project works in the folder itself. Ignored files and common secret files
 (`.env`, keys, credential files) stay out of the workers' reach unless you grant a
@@ -102,7 +103,9 @@ conversation you read is never changed. **Project → Compact conversation** or
 
 ## The terminal client
 
-`dispatch` in a folder opens it. Type `/` to list commands. The ones you will use most:
+`dispatch` in a folder opens it. The first time, it asks for the controller address and
+token, then for a manager and a worker model; `/role` saves the two together. Type `/` to
+complete a command, or `/help` to list them all. The ones you will use most:
 
 | Command | Does |
 |---|---|
@@ -110,14 +113,15 @@ conversation you read is never changed. **Project → Compact conversation** or
 | `/board` | The plan and its tasks. Tab switches between them and the conversation. |
 | `/pause`, `/resume`, `/cancel` | Control the run. |
 | `/trust`, `/network` | This project's permissions and network. |
-| `/models`, `/role` | Which models do what. |
+| `/models`, `/role` | What Poundlock serves, and which model is the manager or the worker. |
 | `/compact` | Summarise older context now. |
 | `/autopilot` | Build the approved plan unattended ([Autopilot](#autopilot)). |
 | `/connect`, `/setup` | The controller and token; what is configured. |
 | `/quit` | Exit. |
 
 `dispatch jobs …` drives Poundlock jobs by hand from a shell, and `dispatch autopilot …` runs
-Autopilot. Each has `--help`.
+Autopilot. Each has `--help`. `dispatch --json` prints the project's state and exits, for
+scripts.
 
 ## Autopilot
 
@@ -168,14 +172,15 @@ From a shell:
 
 ```sh
 dispatch autopilot start --dir . --image python:3.14-slim --plan plan.json
-dispatch autopilot watch --dir .    # Ctrl+C leaves it running
-dispatch autopilot message --dir . --text "Keep the database code in src/lib/server."
-dispatch autopilot stop --dir . [--now]
-dispatch autopilot resume --dir .
-dispatch autopilot export --dir . --out run.patch
+dispatch autopilot watch            # Ctrl+C leaves it running
+dispatch autopilot message --text "Keep the database code in src/lib/server."
+dispatch autopilot stop [--now]
+dispatch autopilot resume
+dispatch autopilot export --out run.patch
 ```
 
-Without a run id they act on the folder's newest run. `dispatch autopilot --help` lists
+Without a run id they act on the newest run of `--dir`, or of the folder you are in.
+`dispatch autopilot --help` lists
 the options and limits; `resume` picks a run up where it stopped. Read the exported patch or the merged commits before you build on them.
 `dispatch auto` and `/auto` still work for one more release.
 
@@ -216,7 +221,8 @@ downloads if the project installs packages. Merge or drop the previous run first
 thirds of its time, so a repair can follow; one that still runs out of time is abandoned,
 and the Planner replans it at the next milestone review. With a frontier Planner, each
 feature's acceptance test is the Planner's, written from your scenarios before the code, and
-no worker can change it. Look in when an
+no worker can change it. Every milestone review starts over and reads the tests behind each
+requirement, so expect a review to cost dollars rather than cents. Look in when an
 alert arrives, or once or twice a day. If **Details** shows the same failure in several
 tasks, tell Autopilot the rule once with **Message Autopilot**: where the code belongs,
 which library to use, what never to do. Don't edit the project folder while a run builds.

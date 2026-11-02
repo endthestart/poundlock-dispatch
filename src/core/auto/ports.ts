@@ -55,6 +55,18 @@ export interface CaseAttemptResult {
   interruptedActions?: string[];
 }
 
+export interface TaskCheckInput {
+  title: string;
+  acceptanceCriteria: string;
+  /** Every file the case changed. */
+  changed: string[];
+  /** The test files among them, as they now stand. */
+  tests: Array<{ path: string; text: string }>;
+}
+
+/** A quick comparison of a passing case's tests with its criteria: the gaps it found. */
+export type TaskCheck = (input: TaskCheckInput, signal: AbortSignal) => Promise<string[]>;
+
 export interface AutoWorkerPort {
   runCase(input: CaseAttemptInput): Promise<CaseAttemptResult>;
 }

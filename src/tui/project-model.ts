@@ -6,7 +6,7 @@
 import { type CatalogProfile, type ExecutionRole, roleUnavailableReason } from "@shared/roles";
 import type { ProjectPolicy } from "@shared/types";
 
-export const PROJECT_MODEL_USAGE = "Usage: /project-model [manager|worker] [profile|default]";
+const PROJECT_MODEL_USAGE = "Usage: /project-model [manager|worker] [profile|default]";
 
 const ROLE: Record<string, { field: "managerModel" | "workerModel"; role: ExecutionRole }> = {
   manager: { field: "managerModel", role: "manager" },

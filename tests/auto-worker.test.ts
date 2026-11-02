@@ -10,6 +10,7 @@ import {
   caseBrief,
   createAutoWorker,
   lastNotes,
+  timeoutNote,
 } from "@runtime/auto-session";
 import {
   type AutoAttemptRecord,
@@ -510,6 +511,31 @@ describe("auto worker through Poundlock", () => {
     const outcome = await env.worker.runCase(env.input());
     expect(outcome.finish).toBe("none");
     expect(outcome.inferenceUnavailable, outcome.error).toBe(true);
+  });
+
+  it("halves an attempt's command limit after each timeout, and says why", async () => {
+    // A hung test cost one case six 10-minute waits.
+    const results: string[] = [];
+    const env = await workerSetup(
+      (request) => {
+        const last = request.messages.at(-1);
+        if (last?.role === "tool") results.push(JSON.stringify(last.content));
+        return callsSinceLastUser(request).length < 2
+          ? { toolCalls: [{ name: "bash", arguments: { command: "sleep 5" } }] }
+          : { toolCalls: [{ name: "finish_case", arguments: { status: "done", summary: "s" } }] };
+      },
+      undefined,
+      () => ({ commandMs: 2_000 }),
+    );
+    try {
+      await env.worker.runCase(env.input());
+      expect(results[0]).toContain("timed out after 2 seconds");
+      expect(results[0]).toContain(timeoutNote(1_000));
+      expect(results[1]).toContain("timed out after 1 seconds");
+      expect(results[1]).toContain(timeoutNote(500));
+    } finally {
+      await env.server.close();
+    }
   });
 
   it("stops what an interrupted attempt left running and names it", async () => {

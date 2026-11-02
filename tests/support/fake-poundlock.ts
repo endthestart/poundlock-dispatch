@@ -28,6 +28,8 @@ export interface ScriptedTurn {
   delay?: Promise<unknown>;
   /** End the reply as cut off at the output limit. */
   cutOff?: boolean;
+  /** Cut the connection partway through the reply. */
+  drop?: boolean;
 }
 
 export interface FakePoundlockOptions {
@@ -142,6 +144,16 @@ export async function fakePoundlock(options: FakePoundlockOptions) {
         });
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const base = { id: `c${chats}`, object: "chat.completion.chunk", model: model.id };
+      if (turn.drop) {
+        const partial = {
+          index: 0,
+          delta: { role: "assistant", content: "Part" },
+          finish_reason: null,
+        };
+        res.write(chunk({ ...base, choices: [partial] }));
+        res.destroy();
+        return;
+      }
       if (turn.toolCalls?.length) {
         res.write(
           chunk({

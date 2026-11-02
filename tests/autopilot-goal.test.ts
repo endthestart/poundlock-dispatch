@@ -51,7 +51,12 @@ function script(request: ChatRequest): ScriptedTurn {
       requirementId: id,
       result: "shown",
       note: `test for ${id}`,
+      scenarios: [{ scenario: 1, files: ["README.md"], finding: "checked" }],
+      promises: [{ promise: id, files: ["README.md"], finding: "delivered" }],
     });
+    // A gating review reads what it cites before it calls anything shown.
+    if (ask.includes("Review milestone") && !calls.includes("read"))
+      return { toolCalls: [{ name: "read", arguments: { path: "README.md" } }] };
     const answer = ask.includes("Plan milestone M2")
       ? {
           tasks: [

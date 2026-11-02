@@ -6,7 +6,7 @@
 import { fixRoundsPerTask, MAX_FIX_ROUNDS_SETTING } from "@shared/policy-limits";
 import type { ProjectPolicy } from "@shared/types";
 
-export const FIX_ROUNDS_USAGE = `Usage: /fix-rounds [0-${MAX_FIX_ROUNDS_SETTING}|default]`;
+const FIX_ROUNDS_USAGE = `Usage: /fix-rounds [0-${MAX_FIX_ROUNDS_SETTING}|default]`;
 
 export function fixRoundsCommand(
   policy: ProjectPolicy,

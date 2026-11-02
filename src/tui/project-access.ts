@@ -9,9 +9,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ForgeKind, ProjectRecord, RuntimeCandidate } from "@shared/types";
 
-export const RUNTIME_USAGE =
+const RUNTIME_USAGE =
   "Usage: /runtime, /runtime node <number|folder>, or /runtime node none. A folder is absolute or starts with ~.";
-export const REPO_ACCOUNT_USAGE = "Usage: /repo-account [github|gitea|none]";
+const REPO_ACCOUNT_USAGE = "Usage: /repo-account [github|gitea|none]";
 
 export function runtimeLines(project: ProjectRecord, candidates: RuntimeCandidate[]): string {
   return [

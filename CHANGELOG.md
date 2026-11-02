@@ -5,6 +5,12 @@
 The first public release, a developer preview. Autopilot is a preview. Tested with
 Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
 
+- The terminal's Normal transcript says how many earlier steps it hides, as the app does.
+- A dropped connection no longer ends a Planner call, and with it an unattended run: the
+  Planner only reads, so it is asked again in the same session, up to twice.
+- Every Frontier-tier review now starts over. A requirement counts as shown only when that
+  review read the tests for each of its scenarios and checked what its words promise on an
+  ordinary input, and Dispatch sends back a verdict citing files it did not read.
 - Acceptance first: in the Frontier tier the Planner writes each feature's end-to-end test
   from your scenarios. Dispatch adds it, frozen, when the task that must pass it starts, and
   puts it back if a worker changes it.
@@ -29,6 +35,33 @@ Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
 - One approval covers an investigation: once you approve its first command, its other
   commands in the project folder run without asking. They run in a sandbox that can neither
   change files nor use the network.
+- Autopilot passes a worker's lessons to later tasks only once its task is accepted. An
+  abandoned worker's wrong guess, such as "rendering hangs in the container", was passed
+  on as fact; what Dispatch's own checks found still is.
+- After a worker's command times out, its next command's output no longer starts with
+  "container … is not running". Stopping the timed-out command also stops the run's
+  container; Autopilot starts it again and runs the command, but the Docker client's
+  refusal reached the worker first and read like a dead sandbox.
+- After a worker's command times out, its attempt's later commands get half as long each
+  time, down to a quarter of the limit (2.5 minutes at the default 10), and the worker is
+  told to find the hanging test before running it again. One case's hung test had cost six
+  10-minute waits.
+- Autopilot sends back a task whose Cargo, npm or Python manifest depends on a path a fresh
+  checkout would not have: outside the project, or a folder Git ignores. An offline worker
+  pointed Cargo at crates in the run's own cache, so the product built only in the run.
+- A manager's question that points at questions you can't see, such as "Please answer 1–7
+  above" with the questions only in its thinking, goes back to the manager once to be
+  written out in full, and the question tool says you see nothing else.
+- The Planner's acceptance tests must check against a truth more accurate than their own
+  tolerance. One computed Polaris's transit with a short precession formula that is 4.6
+  minutes off there, against a 3-minute tolerance, so no correct app could pass it.
+- Autopilot's Planner reasons at medium where its model lists that level, not at the provider's
+  default. On one replayed review it named more of the known defects, for $2.03 against $2.76.
+- After a task passes its checks, the run's local worker model compares its tests with its
+  acceptance criteria, once per task, and sends it back if a test misses or contradicts them. It
+  never judges facts from memory, and a check that fails, or too little time left, costs nothing.
+- The manager gives a plan of more than about 8 tasks milestones, so each review stays small and
+  a wrong foundation is caught before more is built on it.
 - Every requirement chip names its verdict in words, only the run's standing is announced to
   screen readers, Normal density says how many steps it folded, and the run's buttons stay
   in view while its card scrolls.

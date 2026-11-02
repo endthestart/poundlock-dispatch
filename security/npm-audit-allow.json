@@ -1,1 +1,6 @@
-{}
+{
+  "GHSA-g3hv-75wg-m249": {
+    "expires": "2026-12-15",
+    "reason": "minimatch 3, 5 and 9 reached only through electron-builder at build time, whose patterns are this repo's, not an attacker's; no fixed release in those majors. Pi's runtime copy is overridden to the fixed 11.0.1. Remove when electron-builder moves off them."
+  }
+}
