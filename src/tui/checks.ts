@@ -5,7 +5,7 @@
  */
 import type { ProjectPolicy } from "@shared/types";
 
-export const CHECKS_USAGE =
+const CHECKS_USAGE =
   "Usage: /checks, /checks add <command>, /checks remove <number>, /checks clear or /checks mutation [on|off]";
 
 /** Project settings' mutation check: break the task's new code a little and see whether a check notices. */

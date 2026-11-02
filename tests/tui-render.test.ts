@@ -19,6 +19,7 @@ import {
   renderStatusLines,
   renderTranscript,
 } from "@tui/render";
+import { renderBanner, renderTitleBar } from "@tui/render-banner";
 import { describe, expect, it } from "vitest";
 
 const WIDTH = 80;
@@ -317,6 +318,26 @@ describe("conversation screen", () => {
   });
 });
 
+describe("before the models are chosen", () => {
+  it("says so in the title and the banner, instead of offering a discussion", () => {
+    // A fresh connection has no manager or worker, so nothing can be discussed yet.
+    const fresh = state({
+      connection: {
+        url: "https://poundlock.example",
+        tokenConfigured: true,
+        roles: {},
+        rolesReady: false,
+      },
+    } as Partial<AppStateView>);
+    const status = projectStatusView(fresh.snapshot as ProjectSnapshot);
+    expect(text(renderTitleBar(fresh, 100))).toContain("Choose models");
+    expect(text(renderTitleBar(fresh, 100))).not.toContain("Ready to discuss");
+    const banner = text(renderBanner(fresh, status, 100));
+    expect(banner).toContain("/role manager");
+    expect(banner).not.toContain("Ask a question");
+  });
+});
+
 describe("the two-line status", () => {
   const withRoles = state({
     connection: {
@@ -559,5 +580,18 @@ describe("the composer while Autopilot holds the project", () => {
     expect(hint("running")).toMatch(/^Message Autopilot: the worker hears it now/);
     expect(hint("interrupted")).toBe("Message Autopilot: the run reads it when you resume…");
     expect(hint("ended")).not.toContain("Message Autopilot");
+    // A run that ended waiting for the owner takes the answer, as in the app.
+    const blocked = (dropped: boolean) =>
+      renderComposerHint(
+        state({
+          autopilot: {
+            phase: "ended",
+            outcome: "blocked_for_input",
+            dropped,
+          } as AppStateView["autopilot"],
+        }),
+      );
+    expect(blocked(false)).toMatch(/^Answer Autopilot/);
+    expect(blocked(true)).not.toContain("Autopilot");
   });
 });

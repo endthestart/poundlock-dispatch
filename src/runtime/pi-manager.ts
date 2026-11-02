@@ -41,6 +41,7 @@ import { splitLeakedParameters } from "@shared/leaked-parameters";
 import { ReasoningUnsupportedError, reasoningLabel } from "@shared/reasoning";
 import { requireInteractiveLimits } from "@shared/roles";
 import { MAX_QUESTION_OPTIONS, type QuestionOption } from "@shared/types";
+import { pointsAbove, UNSEEN_QUESTION, visibleTurnText } from "@shared/unseen-question";
 import { webSearchFor } from "@shared/web-search";
 import { Type } from "typebox";
 import { MODEL_REQUEST_TIMEOUT_MS } from "./model-http";
@@ -889,6 +890,7 @@ export function buildTools(
   guard?: WebGuard,
 ) {
   const host = ctx.host;
+  const sentBack = new Set<string>();
   // After web content in a turn, what lasts waits for the owner: a page can carry
   // instructions meant to plant a task, a brief, notes or a waiver (ADR 017).
   const afterWeb = () => (guard?.read ? text(WEB_CONTENT_HOLD) : undefined);
@@ -1127,7 +1129,8 @@ export function buildTools(
     pi.defineTool({
       name: "ask_user",
       label: "Ask user",
-      description: "Ask the user one short question; for a choice, give options. Ends your turn.",
+      description:
+        "Ask the user: they see only the question and its options, never your thinking, so write in it everything they must answer (several numbered questions are fine). For a choice, give options. Ends your turn.",
       parameters: Type.Object({
         question: Type.String(),
         options: Type.Optional(
@@ -1140,8 +1143,23 @@ export function buildTools(
           ),
         ),
       }),
-      execute: async (_id: string, params: { question: string; options?: QuestionOption[] }) => {
+      execute: async (
+        _id: string,
+        params: { question: string; options?: QuestionOption[] },
+        _signal?: AbortSignal,
+        _onUpdate?: unknown,
+        ctx?: { sessionManager: { getBranch(): Parameters<typeof visibleTurnText>[0] } },
+      ) => {
         const asked = splitLeakedParameters(params.question, params.options);
+        // Once per question: a manager that asks it again means what it says.
+        if (
+          !sentBack.has(asked.question) &&
+          pointsAbove(asked.question) &&
+          !visibleTurnText(ctx?.sessionManager.getBranch() ?? [])
+        ) {
+          sentBack.add(asked.question);
+          throw new Error(UNSEEN_QUESTION);
+        }
         return text(await host.askUser(asked.question, asked.options), true);
       },
     }),

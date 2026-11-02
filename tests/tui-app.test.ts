@@ -29,8 +29,9 @@ import {
 import { hostCommandPort } from "@runtime/host-command";
 import { catalogFromProbe } from "@shared/roles";
 import type { ProjectRecord } from "@shared/types";
-import { SEARCH_KEYS, TuiApp } from "@tui/app";
+import { TuiApp } from "@tui/app";
 import { permissionsCommand } from "@tui/app-permissions";
+import { SEARCH_KEYS } from "@tui/app-views";
 import { Card } from "@tui/card";
 import { type Colours, createColours } from "@tui/colour";
 import { filePreferences, memoryPreferences, type TuiPreferenceStore } from "@tui/preferences";
@@ -395,6 +396,15 @@ describe("terminal keys", () => {
     }
   });
 
+  it("lists the commands for /help, as typing / does", async () => {
+    const { host, app } = await appFixture();
+    await app.submitForTest("/help");
+    const text = (await host.getState()).notice?.text ?? "";
+    expect(text).not.toMatch(/Unknown command/);
+    expect(text).toMatch(/\/board +Show the plan and task board\./);
+    expect(text).toContain("/role <role> [profile]");
+  });
+
   it("never leaves on a single ctrl+c", async () => {
     // One keystroke ending a session you were mid-sentence in is the way to
     // lose work. The first press abandons what you typed; only a second,
@@ -469,7 +479,7 @@ describe("choosing models from the terminal", () => {
     expect(notice?.kind).toBe("info");
     expect(notice?.text).toContain("orion-fast");
     expect(notice?.text).toContain("frontier-gpt-sol");
-    expect(notice?.text).toContain("external");
+    expect(notice?.text).toContain("External provider");
   });
 
   it("binds a role to a profile, which is the whole point", async () => {
@@ -485,6 +495,27 @@ describe("choosing models from the terminal", () => {
     const roles = (await fixture.store.getConnection()).roles;
     expect(roles.manager?.profileName).toBe("frontier-gpt-sol");
     expect(roles.manager?.approvedDataDestination).toBe("external");
+    expect(roles.interactive?.profileName).toBe("orion-fast");
+  });
+
+  it("sets up a fresh connection one role at a time, holding the first until the worker is chosen", async () => {
+    // The host saves a model map only with both roles in it, so binding the
+    // manager alone on a fresh connection was refused, and so was the worker.
+    const { app, host, fixture } = await appFixture();
+    servedCatalog(host);
+    await fixture.store.saveConnection({ ...(await fixture.store.getConnection()), roles: {} });
+    const notice = async () => (await host.getState()).notice?.text ?? "";
+
+    await app.submitForTest("/role manager frontier-gpt-sol");
+    expect((await fixture.store.getConnection()).roles).toEqual({});
+    expect(await notice()).toContain("/role worker");
+    // The destination in words, as /models says it.
+    expect(await notice()).toContain("frontier-gpt-sol (External provider)");
+
+    // "Worker" is what the app and the refusal call the interactive role.
+    await app.submitForTest("/role worker orion-fast");
+    const roles = (await fixture.store.getConnection()).roles;
+    expect(roles.manager?.profileName).toBe("frontier-gpt-sol");
     expect(roles.interactive?.profileName).toBe("orion-fast");
   });
 

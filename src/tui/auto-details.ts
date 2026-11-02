@@ -2,7 +2,7 @@
  * The run card's Details as the terminal shows them: the shared summary
  * sentence, the progress lines, and each task with its stage and the reason
  * it stopped. `dispatch autopilot status` prints them under the card;
- * `/auto details` shows them on their own screen.
+ * `/autopilot details` shows them on their own screen.
  */
 import type { AutopilotView } from "@shared/auto-run";
 import { autopilotDetails, autopilotDetailsSummary } from "@shared/autopilot-details";

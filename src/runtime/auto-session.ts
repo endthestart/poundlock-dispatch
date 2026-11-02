@@ -260,45 +260,55 @@ async function execResilient(
   return again;
 }
 
+/** What a worker hears when its command ran past the limit, and the limit from now on. */
+export function timeoutNote(limitMs: number): string {
+  return `[Dispatch stopped this command at its time limit. A command that hangs is usually a test stuck in a loop or waiting on input: find which one and why before running it again. Commands in this attempt now stop after ${Math.round(limitMs / 1000)} seconds.]`;
+}
+
 export function createAutoWorker(
   options: AutoWorkerOptions,
 ): AutoWorkerPort & AutoVerifierPort & AutoPreparePort {
   let model = options.model;
   let approvedRevision = options.lastApprovedRoutingRevision;
-  const containerBash = (meta: { caseId: string; attempt: number }) => ({
-    exec: async (
-      command: string,
-      cwd: string,
-      exec: { onData: (data: Buffer) => void; signal?: AbortSignal; timeout?: number },
-    ) => {
-      const file = join(inflightDir(options.runDir), `${randomUUID()}.json`);
-      await mkdir(inflightDir(options.runDir), { recursive: true, mode: 0o700 });
-      await writeFile(
-        file,
-        JSON.stringify({ command, ...meta, startedAt: new Date().toISOString() }),
-        { mode: 0o600 },
-      );
-      const timeoutMs = Math.min(
-        exec.timeout ? exec.timeout * 1000 : options.commandMs,
-        options.commandMs,
-      );
-      try {
-        const result = await execResilient(options.isolation, command, {
-          cwd,
-          signal: exec.signal,
-          timeoutMs,
-          onData: exec.onData,
-        });
-        if (exec.signal?.aborted) throw new Error("aborted");
-        if (result.error?.startsWith("Command timed out"))
-          throw new Error(`timeout:${Math.round(timeoutMs / 1000)}`);
-        if (result.error) throw new Error(result.error);
-        return { exitCode: result.exitCode };
-      } finally {
-        await rm(file, { force: true });
-      }
-    },
-  });
+  const containerBash = (meta: { caseId: string; attempt: number }) => {
+    // One case's hung test cost six 10-minute waits: after each timeout the attempt's
+    // commands get half as long, down to a quarter of the usual limit.
+    let limitMs = options.commandMs;
+    return {
+      exec: async (
+        command: string,
+        cwd: string,
+        exec: { onData: (data: Buffer) => void; signal?: AbortSignal; timeout?: number },
+      ) => {
+        const file = join(inflightDir(options.runDir), `${randomUUID()}.json`);
+        await mkdir(inflightDir(options.runDir), { recursive: true, mode: 0o700 });
+        await writeFile(
+          file,
+          JSON.stringify({ command, ...meta, startedAt: new Date().toISOString() }),
+          { mode: 0o600 },
+        );
+        const timeoutMs = Math.min(exec.timeout ? exec.timeout * 1000 : limitMs, limitMs);
+        try {
+          const result = await execResilient(options.isolation, command, {
+            cwd,
+            signal: exec.signal,
+            timeoutMs,
+            onData: exec.onData,
+          });
+          if (exec.signal?.aborted) throw new Error("aborted");
+          if (result.error?.startsWith("Command timed out")) {
+            limitMs = Math.max(Math.floor(limitMs / 2), Math.floor(options.commandMs / 4));
+            exec.onData(Buffer.from(`\n${timeoutNote(limitMs)}\n`));
+            throw new Error(`timeout:${Math.round(timeoutMs / 1000)}`);
+          }
+          if (result.error) throw new Error(result.error);
+          return { exitCode: result.exitCode };
+        } finally {
+          await rm(file, { force: true });
+        }
+      },
+    };
+  };
 
   return {
     async prepare(signal): Promise<VerificationResult> {

@@ -8,6 +8,7 @@
 import {
   type CatalogProfile,
   destinationLabel,
+  type ExecutionRole,
   effectiveDestination,
   endpointKindLabel,
   pricingSourceLabel,
@@ -22,6 +23,11 @@ const OVERRIDE: Record<string, DataDestination | undefined> = {
   external: "external",
   reported: undefined,
 };
+
+/** A role as the app names it: the interactive role is the Worker. */
+export function roleName(role: ExecutionRole): string {
+  return role === "interactive" ? "worker" : role;
+}
 
 /** The override `destination <own|external|reported>` names; `reported` clears it. */
 export function destinationOverride(wanted: string): DataDestination | undefined {
@@ -55,14 +61,29 @@ export function modelDetailLines(profile: CatalogProfile, override?: string): st
 export function modelListRows(
   catalog: CatalogProfile[],
   roles: Record<string, { profileId: string } | undefined>,
+  width: number,
 ): string[] {
   const bound = new Map<string, string[]>();
   for (const [role, binding] of Object.entries(roles))
-    if (binding) bound.set(binding.profileId, [...(bound.get(binding.profileId) ?? []), role]);
-  const nameWidth = Math.max(...catalog.map((profile) => profile.name.length)) + 2;
-  return catalog.map((profile) => {
-    const where = profile.dataDestination ?? "unknown";
+    if (binding)
+      bound.set(binding.profileId, [
+        ...(bound.get(binding.profileId) ?? []),
+        roleName(role as ExecutionRole),
+      ]);
+  const rows = catalog.map((profile) => {
     const held = bound.get(profile.profileId ?? profile.id);
-    return `  ${profile.name.padEnd(nameWidth)}${where.padEnd(18)}${held ? `← ${held.join(", ")}` : ""}`.trimEnd();
+    return {
+      name: profile.name,
+      where: destinationLabel(profile.dataDestination),
+      held: held ? `← ${held.join(", ")}` : "",
+    };
   });
+  const nameWidth = Math.max(...rows.map((row) => row.name.length)) + 2;
+  const whereWidth = Math.max(...rows.map((row) => row.where.length)) + 2;
+  const table = rows.map((row) =>
+    `  ${row.name.padEnd(nameWidth)}${row.where.padEnd(whereWidth)}${row.held}`.trimEnd(),
+  );
+  if (table.every((line) => line.length <= width)) return table;
+  // Too narrow for columns: the details go under the name rather than wrap.
+  return rows.flatMap((row) => [`  ${row.name}`, `      ${row.where} ${row.held}`.trimEnd()]);
 }

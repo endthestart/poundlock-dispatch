@@ -9,7 +9,9 @@ import { projectFiles } from "@core/paths";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { afterAll, describe, expect, it } from "vitest";
-import { type AutoCliDeps, parseAutoArgs, runAuto } from "../src/tui/auto";
+import { runAuto } from "../src/tui/auto";
+import { parseAutoArgs } from "../src/tui/auto-args";
+import type { AutoCliDeps } from "../src/tui/auto-context";
 import { fakeDocker } from "./support/fake-docker";
 import { callsSinceLastUser, fakePoundlock, type ScriptedTurn } from "./support/fake-poundlock";
 import { tempDir } from "./support/temp-dir";
@@ -115,6 +117,9 @@ async function setup() {
 describe("auto command line", () => {
   it("parses commands and refuses what is missing or malformed", () => {
     expect(parseAutoArgs([])).toEqual({ command: "help" });
+    // With no run named, the folder it is typed in is meant, as bare dispatch opens it.
+    expect(parseAutoArgs(["status"])).toEqual({ command: "status", dir: process.cwd() });
+    expect(parseAutoArgs(["list"])).toEqual({ command: "list", dir: process.cwd() });
     expect(parseAutoArgs(["stop", "auto-1", "--now"])).toEqual({
       command: "stop",
       run: "auto-1",
@@ -172,9 +177,8 @@ describe("auto command line", () => {
       [["start", "--dir", "/p", "--image", "i", "--case-minutes", "1.5"], /positive whole number/],
       [["start", "--dir", "/p", "--image", "i", "--check", " "], /cannot be empty/],
       [["start", "--dir", "/p", "--image", "i", "--checkpoint", "pause"], /notify or wait/],
-      [["list"], /needs --dir/],
       [["status", "a", "b"], /at most one run/],
-      [["frobnicate"], /Unknown auto command/],
+      [["frobnicate"], /Unknown Autopilot command/],
     ] as const)
       expect(() => parseAutoArgs([...argv]), argv.join(" ")).toThrow(message);
   });
@@ -185,7 +189,7 @@ describe("auto command line", () => {
     expect(env.text()).toContain("verified by the project's checks, not reviewed");
     expect(await env.cli()).toBe(2);
     expect(await env.cli("start", "--dir", env.source)).toBe(2);
-    expect(env.text()).toContain('Run "auto --help" for usage.');
+    expect(env.text()).toContain('Run "dispatch autopilot --help" for usage.');
   });
 
   it("starts, then runs a case in the runner and exports it", async () => {
@@ -395,7 +399,7 @@ describe("auto command line", () => {
 
 describe("the limits line", () => {
   it("writes hours as a person would", async () => {
-    const { hours } = await import("../src/tui/auto");
+    const { hours } = await import("../src/tui/auto-launch");
     expect(hours(2)).toBe("2 h");
     expect(hours(2.5833333333333335)).toBe("2 h 35 min");
     expect(hours(0.25)).toBe("15 min");

@@ -196,8 +196,10 @@ switch (command) {
       process.stderr.write(`Error response from daemon: container ${name} is not running\n`);
       process.exit(1);
     }
+    // Under `--init` the keeper is not PID 1, so `kill -9 -1` ends it and the container stops.
     if (argv[0] === "sh" && argv[1] === "-c" && argv[2]?.startsWith("kill -9 -1")) {
       killAll(name);
+      save({ ...container(name), running: false });
       process.exit(0);
     }
     // The container's /tmp is its own; here that would be this machine's, so it is only logged.

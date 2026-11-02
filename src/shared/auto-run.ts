@@ -270,8 +270,13 @@ export type AutoEvent =
       attempt: number;
       mutants: Array<{ path: string; line: number; change: string; caught: boolean }>;
     }
-  /** What a case, or Dispatch, learned for the cases after it; kept across resumes. */
-  | { type: "learned"; texts: string[] }
+  /** A passing case's tests compared with its criteria; `error` means the check did not answer. */
+  | { type: "task_check"; caseId: string; attempt: number; gaps: string[]; error?: string }
+  /**
+   * What a case, or Dispatch, learned for the cases after it; kept across resumes. A
+   * worker's own lessons carry its caseId and reach later cases only once it is accepted.
+   */
+  | { type: "learned"; texts: string[]; caseId?: string }
   /** An inbox entry the runner took: pause, stop now, or a message from the owner (ADR 016). */
   | { type: "inbox"; id: string; cmd: InboxCommand; text?: string }
   | { type: "run_ended"; outcome: AutoOutcome; reason: string }

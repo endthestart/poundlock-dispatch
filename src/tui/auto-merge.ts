@@ -16,7 +16,7 @@ import { showPicker } from "./picker.js";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
-export function mergeSummary(preview: AutopilotMergePreview): string[] {
+function mergeSummary(preview: AutopilotMergePreview): string[] {
   return [
     `${plural(preview.commits, "commit")}, ${plural(preview.files, "file")} changed, up to ${preview.head.slice(0, 12)}. Verified by the checks, not reviewed.`,
     ...(preview.runsHere.length

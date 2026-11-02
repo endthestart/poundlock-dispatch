@@ -198,10 +198,26 @@ describe("container isolation", () => {
       timeoutMs: 300,
     });
     expect(timed).toMatchObject({ exitCode: null, error: "Command timed out after 0 s" });
+    // Stopping it stopped the container too; Autopilot's command path starts it again.
+    await isolation.start();
     const controller = new AbortController();
     const running = isolation.exec("sleep 30", { cwd: worktree, signal: controller.signal });
     setTimeout(() => controller.abort(), 200);
     expect(await running).toMatchObject({ exitCode: null, error: "Cancelled" });
+  });
+
+  it("streams no Docker client error when stopping a timed-out command stopped the container", async () => {
+    const { worktree, isolation } = await setup();
+    await isolation.start();
+    await isolation.exec("sleep 30", { cwd: worktree, timeoutMs: 300 });
+    const streamed: string[] = [];
+    const onData = (chunk: Buffer) => streamed.push(chunk.toString("utf8"));
+    const refused = await isolation.exec("echo still here", { cwd: worktree, onData });
+    expect(isRuntimeFailure(refused)).toBe(true);
+    expect(streamed).toEqual([]);
+    await isolation.start();
+    await isolation.exec("echo still here; printf done", { cwd: worktree, onData });
+    expect(streamed.join("")).toBe("still here\ndone");
   });
 
   it("kills commands an attempt left running in the background", async () => {

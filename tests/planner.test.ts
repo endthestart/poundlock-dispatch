@@ -12,10 +12,16 @@ import {
   trimPlan,
 } from "@core/goal/planner-prompts";
 import { autoProject } from "@runtime/auto-session";
-import { createPlanner, cutOffRequest, PlannerError, plannerTimeLimit } from "@runtime/planner";
+import {
+  createPlanner,
+  cutOffRequest,
+  PLANNER_REASONING,
+  PlannerError,
+  plannerTimeLimit,
+} from "@runtime/planner";
 import { milestoneProblems } from "@shared/milestones";
 import type { ModelFallback } from "@shared/spending-limit";
-import type { Milestone } from "@shared/types";
+import type { Milestone, ReasoningLevel } from "@shared/types";
 import { afterAll, expect, it } from "vitest";
 import {
   type ChatRequest,
@@ -654,6 +660,52 @@ it("stops a Planner's reading at its limit and takes the answer it then gives", 
   const answer = await planner.planMilestone({ spec, milestone: M1, done: [] });
   expect(answer.tasks.map((item) => item.title)).toEqual(["Import screen"]);
   expect(server.requests.filter(warned).length).toBeGreaterThan(0);
+});
+
+it("reasons at the asked level only on a model that lists it", async () => {
+  const worktree = await tempDir("planner-level-");
+  const server = await fakePoundlock({
+    respond: () => ({
+      toolCalls: [
+        {
+          name: "submit",
+          arguments: { tasks: [task("Import screen", ["R1"])], verdicts: [], complete: false },
+        },
+      ],
+    }),
+  });
+  servers.push(server);
+  const ask = async (reasoningLevels: ReasoningLevel[] | undefined) => {
+    const planner = createPlanner({
+      controllerUrl: server.url,
+      token: server.token,
+      model: {
+        id: "gate-model",
+        profileId: "p-gate",
+        context_tokens: 131_072,
+        max_output_tokens: 8192,
+        dataDestination: "operator_network",
+        routingRevision: "r1",
+        ...(reasoningLevels ? { reasoningLevels } : {}),
+      },
+      reasoning: PLANNER_REASONING,
+      worktree,
+      project: autoProject({
+        runId: "r",
+        worktree,
+        baseCommit: "0",
+        createdAt: new Date().toISOString(),
+        checks: [],
+        protectedPaths: [],
+      }),
+      dir: await tempDir("planner-level-dir-"),
+    });
+    await planner.planMilestone({ spec, milestone: M1, done: [] });
+    return (server.requests.at(-1) as unknown as { reasoning_effort?: string }).reasoning_effort;
+  };
+  expect(await ask(["low", "medium"])).toBe("medium");
+  // The local fallback lists none, and must still answer.
+  expect(await ask(undefined)).toBeUndefined();
 });
 
 it("offers a Planner web search when the project turned it on", async () => {

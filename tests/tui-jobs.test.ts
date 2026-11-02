@@ -10,16 +10,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { FileStore } from "@core/store";
+import { displaySafe } from "@shared/display-safe";
 import { main } from "@tui/index";
-import {
-  displaySafe,
-  JOBS_USAGE,
-  type JobsDeps,
-  parseJobsArgs,
-  runJobs,
-  UsageError,
-  wallTimeLeft,
-} from "@tui/jobs";
+import { type JobsDeps, runJobs } from "@tui/jobs";
+import { JOBS_USAGE, parseJobsArgs, UsageError } from "@tui/jobs-args";
+import { wallTimeLeft } from "@tui/jobs-report";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "./support/temp-dir";
 
@@ -276,7 +271,7 @@ describe("jobs exit codes and help", () => {
   it("exits 2 on a usage mistake without reading the connection", async () => {
     const h = harness();
     expect(await h.run("submit", "--dir")).toBe(2);
-    expect(h.err()).toContain('Run "jobs --help"');
+    expect(h.err()).toContain('Run "dispatch jobs --help"');
     expect(h.connection).not.toHaveBeenCalled();
     expect(h.requests).toEqual([]);
   });
@@ -492,6 +487,15 @@ describe("jobs submit", () => {
     for (const gone of [".env.local", "secrets.json"]) expect(h.out()).not.toContain(gone);
     expect(h.connection).not.toHaveBeenCalled();
     expect(h.requests).toEqual([]);
+  });
+
+  it("counts one file as one file, and says a dry run checks no model profile", async () => {
+    const h = harness(accept);
+    const dir = await tempDir("tui-jobs-one-");
+    await writeFile(join(dir, "only.txt"), "x");
+    expect(await h.run("submit", "--dir", dir, "--dry-run", "--model-profile-id", "nope")).toBe(0);
+    expect(h.out()).toContain("1 file, 1 byte would be uploaded.");
+    expect(h.out()).toContain("not checked");
   });
 
   it("says a dropped connection may still have started the job, and that rerunning is safe", async () => {
@@ -864,7 +868,11 @@ describe("jobs probe", () => {
     expect(h.out()).toContain(`url: ${URL}`);
     expect(h.out()).toContain("ready: yes");
     expect(h.out()).toContain("version: 0.1.2");
-    expect(h.out()).toContain("coder (m1), operator_network, busy");
+    // In words, as the app says them, not the controller's codes.
+    expect(h.out()).toContain("coder (m1), Your infrastructure, busy");
+    expect(h.out()).toContain(
+      "permissions: jobs:read, Submit jobs with supplied files, jobs:cancel",
+    );
     expect(h.out()).toContain("Pi (pi) 1.0.0");
     expect(h.out()).toContain("outbound network for jobs: allowed");
     // Not needed for jobs, so it is said and does not fail the probe.

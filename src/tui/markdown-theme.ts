@@ -9,24 +9,55 @@
  * heading in the manager's reply reads as part of the same screen instead of
  * a second, differently-themed widget dropped into it.
  */
-import { highlightCode, initTheme } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
 import type { Colours } from "./colour.js";
 
+type Highlighter = Pick<
+  typeof import("@earendil-works/pi-coding-agent"),
+  "highlightCode" | "initTheme"
+>;
+
+/** pi-coding-agent, once a code fence has brought it in. */
+let highlighter: Highlighter | undefined;
+let loading: Promise<void> | undefined;
+let register: "light" | "dark" = "dark";
+const redraws = new Set<() => void>();
+
 /**
- * pi-coding-agent keeps its own syntax theme in module-global state: `theme`
- * is a `Proxy` that throws "Theme not initialized" until `initTheme` has run
- * once, and `highlightCode` reads through it. There is no per-call theme
- * argument, so this has to run once at startup — see `index.ts` — before
- * anything calls `highlightCode` or builds a `MarkdownTheme` with one.
- *
- * It picks pi-coding-agent's own light/dark theme from this terminal's
- * resolved Catppuccin flavour, so a code fence's syntax colours sit in the
- * same light-or-dark register as the rest of the screen rather than guessing
- * independently from the terminal background a second time.
+ * pi-coding-agent takes over a second to load, all of it blocking the screen,
+ * and is needed only to colour code fences. So it loads the first time a
+ * fence is drawn: until it lands the fence is drawn in one tone, and every
+ * `onHighlighterLoaded` callback then redraws it in colour.
+ */
+export function loadHighlighter(): Promise<void> {
+  loading ??= import("@earendil-works/pi-coding-agent").then((loaded) => {
+    loaded.initTheme(register);
+    highlighter = loaded;
+    for (const redraw of redraws) redraw();
+  });
+  return loading;
+}
+
+/** Call `redraw` once the highlighter has loaded; returns how to stop. */
+export function onHighlighterLoaded(redraw: () => void): () => void {
+  redraws.add(redraw);
+  return () => redraws.delete(redraw);
+}
+
+export function highlighterLoaded(): boolean {
+  return highlighter !== undefined;
+}
+
+/**
+ * pi-coding-agent keeps its syntax theme in module-global state, with no
+ * per-call theme argument. This sets it from this terminal's resolved
+ * Catppuccin flavour — at once if the highlighter is loaded, else when it
+ * loads — so a code fence's syntax colours sit in the same light-or-dark
+ * register as the rest of the screen.
  */
 export function ensureHighlightTheme(colours: Colours): void {
-  initTheme(colours.flavour === "latte" ? "light" : "dark");
+  register = colours.flavour === "latte" ? "light" : "dark";
+  highlighter?.initTheme(register);
 }
 
 /**
@@ -79,6 +110,10 @@ export function markdownTheme(colours: Colours): MarkdownTheme {
     // of one flat tone for the whole fence, which is the raw-text complaint
     // this spike exists to fix. It paints with pi-coding-agent's own theme
     // (set once by `ensureHighlightTheme`), not this file's Catppuccin roles.
-    highlightCode: (code, lang) => highlightCode(code, lang),
+    highlightCode: (code, lang) => {
+      if (highlighter) return highlighter.highlightCode(code, lang);
+      void loadHighlighter().catch(() => undefined);
+      return code.split("\n").map((line) => colours.paint("text", line));
+    },
   };
 }

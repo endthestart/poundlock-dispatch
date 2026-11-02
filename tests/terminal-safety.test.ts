@@ -8,13 +8,14 @@ import type { ToolApproval } from "@shared/permissions";
 import type { ChatMessage } from "@shared/types";
 import { wrap, wrapExact } from "@tui/chrome";
 import { createColours } from "@tui/colour";
-import { ensureHighlightTheme, markdownTheme } from "@tui/markdown-theme";
+import { ensureHighlightTheme, loadHighlighter, markdownTheme } from "@tui/markdown-theme";
 import { approvalCardParts } from "@tui/render";
 import { TranscriptView } from "@tui/transcript";
 import { describe, expect, it } from "vitest";
 
 const ESC = "\x1b";
 const colours = createColours({ theme: "mocha", isTTY: false, env: {} });
+await loadHighlighter();
 ensureHighlightTheme(colours);
 
 /** A command whose harmful part a terminal would hide: erase the line, return, overwrite. */

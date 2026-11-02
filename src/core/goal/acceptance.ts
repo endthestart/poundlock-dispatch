@@ -2,7 +2,10 @@
  * Acceptance first: a Planner whose verdicts count writes each feature's
  * end-to-end test itself, from the owner's words and scenarios, on the task
  * that must make it pass. A worker wrote an inverted warp and a test that
- * asserted it, and runs met their objective with the main job unmeasured. These tests come from another model, and no worker changes them.
+ * asserted it, and runs met their objective with the main job unmeasured. These
+ * tests come from another model, and no worker changes them. One such test checked
+ * a star's transit against a short precession formula, itself further off there than
+ * the test's tolerance; a correct app could not pass.
  */
 import { insideProject } from "@core/auto/acceptance";
 import { freezable, isTestFile } from "@core/frozen-tests";
@@ -13,7 +16,7 @@ import type { PlannerAnswer } from "./planner-prompts";
 export const MAX_ACCEPTANCE_CHARS = 40_000;
 
 export const ACCEPTANCE_RULE =
-  "Acceptance first: you write each feature's acceptance test yourself, from its requirement's words and scenarios, and put it in acceptanceTests on the task that wires the feature into the app (the last of its tasks). It drives the product the way a user would (its command line, API or pages) and checks what the user gets against a truth it sets up itself, to the scenario's tolerance. Use the project's test runner and conventions so its checks run it, and put acceptance in its file name. Dispatch adds it, frozen, when that task starts; the task is accepted only when it passes unchanged. Workers see it only then, so name what it drives (commands and flags, routes, page labels, file formats) in the objectives of the tasks that build them.";
+  "Acceptance first: you write each feature's acceptance test yourself, from its requirement's words and scenarios, and put it in acceptanceTests on the task that wires the feature into the app (the last of its tasks). It drives the product the way a user would (its command line, API or pages) and checks what the user gets against a truth it sets up itself, to the scenario's tolerance. A truth it computes must be accurate well within that tolerance for every input it uses: where a short formula's own error nears the tolerance (low-accuracy precession near the celestial pole, for one), use the rigorous method or a published value, or leave that input out. Use the project's test runner and conventions so its checks run it, and put acceptance in its file name. Dispatch adds it, frozen, when that task starts; the task is accepted only when it passes unchanged. Workers see it only then, so name what it drives (commands and flags, routes, page labels, file formats) in the objectives of the tasks that build them.";
 
 /** Why a gating Planner's acceptance tests cannot be used, as sentences it can correct. */
 export function acceptanceProblems(

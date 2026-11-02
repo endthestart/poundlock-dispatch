@@ -35,7 +35,8 @@ import { PoundlockClient } from "@core/poundlock";
 import { FileStore } from "@core/store";
 import { autoProject, createAutoWorker } from "@runtime/auto-session";
 import { isInferenceUnavailable } from "@runtime/auto-worker";
-import { createPlanner } from "@runtime/planner";
+import { createPlanner, PLANNER_REASONING } from "@runtime/planner";
+import { createTaskCheck } from "@runtime/task-check";
 import { createWebTools } from "@runtime/web-tools";
 import type { AutoOutcome } from "@shared/auto-run";
 import { fallbackNotice, type ModelFallback } from "@shared/spending-limit";
@@ -183,6 +184,13 @@ export async function runAutoRunner(
     await isolation.killAll();
     await rm(join(run.gitDir, "index.lock"), { force: true });
 
+    const taskCheck = run.goal
+      ? createTaskCheck({
+          controllerUrl: connection.url,
+          token: connection.token,
+          model: workerOn ?? model,
+        })
+      : undefined;
     const worker = createAutoWorker({
       project: autoProject({
         runId: run.runId,
@@ -220,6 +228,7 @@ export async function runAutoRunner(
               controllerUrl: connection.url,
               token: connection.token,
               model: plannerOn ?? plannerModel,
+              reasoning: PLANNER_REASONING,
               capabilities,
               lastApprovedRoutingRevision:
                 plannerOn?.routingRevision ?? run.goal.planner.routingRevision,
@@ -291,6 +300,7 @@ export async function runAutoRunner(
       scope: run.scope,
       frozenTests: run.frozenTests,
       mutationCheck: run.mutationCheck,
+      ...(taskCheck ? { taskCheck } : {}),
       ...(board
         ? {
             newCases: async () =>

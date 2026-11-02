@@ -11,11 +11,12 @@
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import type { ChatMessage } from "@shared/types";
 import { createColours } from "@tui/colour";
-import { ensureHighlightTheme, markdownTheme } from "@tui/markdown-theme";
+import { ensureHighlightTheme, loadHighlighter, markdownTheme } from "@tui/markdown-theme";
 import { TranscriptView } from "@tui/transcript";
 import { describe, expect, it } from "vitest";
 
 const colours = createColours({ theme: "mocha", isTTY: false, env: {} });
+await loadHighlighter();
 ensureHighlightTheme(colours);
 const theme = markdownTheme(colours);
 
@@ -171,6 +172,10 @@ describe("TranscriptView", () => {
       expect(normal.indexOf("Drafting the plan")).toBeLessThan(normal.indexOf("Planned."));
       expect(normal).toContain("· read_project_file, list_project_files!");
       expect(normal).not.toContain("Read package.json");
+      // How many it folded, as the app says it, so a failure among them is not lost unseen.
+      expect(normal.replace(/\s+/g, " ")).toContain(
+        "1 earlier step hidden; /transcript verbose shows them",
+      );
     });
 
     it("shows every update and each step's summary", () => {
@@ -179,6 +184,7 @@ describe("TranscriptView", () => {
       expect(verbose).toContain("Drafting the plan");
       expect(verbose).toContain("· Read package.json");
       expect(verbose).toContain("! Listing failed");
+      expect(verbose).not.toContain("hidden");
     });
   });
 });

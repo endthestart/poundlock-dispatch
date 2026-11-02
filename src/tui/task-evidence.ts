@@ -18,7 +18,7 @@ import { heading, subheading, wrap } from "./render.js";
 
 type Attempt = TaskRecord["attempts"][number];
 
-export const TASK_USAGE = "Usage: /task <number> [attempt], numbered as /board lists them";
+const TASK_USAGE = "Usage: /task <number> [attempt], numbered as /board lists them";
 
 /** The task and attempt `/task` names, by their numbers on the board. */
 export function pickTask(

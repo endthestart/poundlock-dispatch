@@ -41,12 +41,14 @@ import {
 } from "./environment";
 import type { AutoLedger } from "./ledger";
 import { caseBudgetMs, checkLimits } from "./limits";
+import { UNSHIPPED_DEPENDENCY, unshippedDependencies } from "./manifest-paths";
 import { putBackMutation, restorePendingMutation, writePendingMutation } from "./pending-mutation";
 import type {
   AutoPreparePort,
   AutoVerifierPort,
   AutoWorkerPort,
   CaseAttemptResult,
+  TaskCheck,
   VerificationResult,
 } from "./ports";
 import {
@@ -86,6 +88,8 @@ export interface AutoRunDeps {
   frozenTests?: string[];
   /** Break each finished case's new code a little and require a check to notice (ADR 016). */
   mutationCheck?: boolean;
+  /** Compare each passing case's tests with its criteria, once per case. */
+  taskCheck?: TaskCheck;
   /**
    * Asked whenever no case can run (ADR 016): the goal driver reviews the
    * milestone and answers with more cases, or how the run ends. Without it,
@@ -138,6 +142,9 @@ export const FINALIZE_MS = 5 * 60_000;
 
 /** The share of a case's allowance a repair attempt needs left to start. */
 const MIN_REPAIR_SHARE = 0.1;
+/** Of a case's allowance, what must be left to send it back for the task check: it already passed. */
+const TASK_CHECK_SHARE = 0.25;
+const TEST_FOLDER = /(^|\/)(tests?|e2e|__tests__)\//;
 
 /**
  * The share of a case's allowance its first attempt may use, so its checks and a repair still
@@ -174,7 +181,7 @@ export class AutoRunEngine {
   private stopAfterCase = false;
   /** Why the runner itself asked to stop, when it was not the owner. */
   private stopReason: string | undefined;
-  private learnings: string[] = [];
+  private learnings: Array<{ text: string; caseId?: string }> = [];
   /** A note for the attempt that picks up after an interruption. */
   private resumeNote: { caseId: string; text: string } | undefined;
   /** Frozen tests the Planner let the rest of the run change, with why. */
@@ -238,7 +245,9 @@ export class AutoRunEngine {
   async resume(): Promise<AutoOutcome> {
     const entries = await this.deps.ledger.read();
     // What earlier cases learned outlives the runner: both lanes lost theirs to a restart (28 Oct).
-    this.learnings = entries.flatMap(({ event }) => (event.type === "learned" ? event.texts : []));
+    this.learnings = entries.flatMap(({ event }) =>
+      event.type === "learned" ? event.texts.map((text) => ({ text, caseId: event.caseId })) : [],
+    );
     const started = entries.find((e) => e.event.type === "run_started")?.event;
     if (!started || started.type !== "run_started")
       throw new Error("This run has no start record.");
@@ -736,7 +745,7 @@ export class AutoRunEngine {
         interruptedActions: result.interruptedActions,
         minutes: Math.round((this.clock().getTime() - started.getTime()) / 6000) / 10,
       });
-      if (result.learnings?.length) await this.learn(...result.learnings);
+      if (result.learnings?.length) await this.learn(result.learnings, item.id);
       await keepSnapshots(
         this.deps.repo.worktree,
         join(this.deps.ledger.runDir, "attempts", `${item.id}-${attempt}`),
@@ -852,9 +861,9 @@ export class AutoRunEngine {
       const cleaned = await this.removeEnvironmentAdditions();
       if (cleaned.length) {
         await ledger.append({ type: "environment_cleaned", caseId: item.id, paths: cleaned });
-        await this.learn(
+        await this.learn([
           `Dispatch removed files added inside the prepared environment (${cleaned.join(", ")}); keep scratch files under /tmp.`,
-        );
+        ]);
       }
       // A changed dependency is rebuilt from setup rather than costing the
       // case: a worker may patch a dependency's types in node_modules. The
@@ -862,9 +871,9 @@ export class AutoRunEngine {
       // so the patch cannot help them. Without downloads the refusal stands.
       const tampered = await this.environmentViolations((await ledger.state()).environmentPaths);
       if (tampered.length && (await this.restoreEnvironment(item.id, tampered)))
-        await this.learn(
+        await this.learn([
           `Dispatch rebuilt the prepared environment because ${tampered.join(", ")} had been changed. Never edit dependencies; fix the project's own code.`,
-        );
+        ]);
       let verification = await this.verifyOrWait(item.id, attempt);
       if ("outcome" in verification) return verification;
       // A failure only in frozen tests the case left alone is run once more: a
@@ -915,6 +924,11 @@ export class AutoRunEngine {
         ...scopeViolations(changed, this.deps.scope ?? {}, item.writable),
         ...(await this.environmentViolations(environmentPaths)),
         ...(await linksOutside(this.deps.repo.worktree, changed)),
+        ...(await unshippedDependencies(
+          this.deps.repo.worktree,
+          changed,
+          async (path) => (await this.deps.repo.run(["check-ignore", "-q", "--", path])).code === 0,
+        )),
         ...this.frozenEdits(item, touched).map((path) => `${path} (frozen test)`),
       ];
       if (violations.length)
@@ -946,6 +960,23 @@ export class AutoRunEngine {
             reason: "mutation check: a break no check noticed",
           });
           findings = missed;
+          fresh = false;
+          attempt++;
+          continue;
+        }
+        const gaps = await this.taskCheckGate(item, attempt, changed);
+        const left = caseBudgetMs(await ledger.state(), limits, caseStartedAt, this.clock());
+        if (
+          gaps &&
+          repairsUsed < limits.maxRepairsPerCase &&
+          left >= limits.caseMinutes * 60_000 * TASK_CHECK_SHARE
+        ) {
+          await ledger.append({
+            type: "case_repair",
+            caseId: item.id,
+            reason: "task check: tests miss the criteria",
+          });
+          findings = gaps;
           fresh = false;
           attempt++;
           continue;
@@ -1133,7 +1164,7 @@ export class AutoRunEngine {
         sessionKey,
         fresh,
         repairFindings: findings,
-        learnings: this.learnings.slice(-5),
+        learnings: (await this.lessons()).slice(-5),
         ownerNotes: [...this.ownerNotes],
         frozenTests: [...this.frozen].filter((path) => !item.frozenTestsToChange?.includes(path)),
         hearOwner: (deliver) => {
@@ -1225,6 +1256,61 @@ export class AutoRunEngine {
     if (!paths.length) return;
     for (const path of paths) this.frozen.add(path);
     await this.deps.ledger.append({ type: "frozen", caseId: item.id, paths });
+  }
+
+  /**
+   * Once per case, the tests it changed against its criteria. Local tests pinned what the
+   * code returned, against the criteria's own words, and passed until a milestone review
+   * hours later. Returns the repair findings; the check failing never costs the case.
+   */
+  private async taskCheckGate(
+    item: AutoCase,
+    attempt: number,
+    changed: string[],
+  ): Promise<string | undefined> {
+    const check = this.deps.taskCheck;
+    if (!check) return undefined;
+    const ledger = this.deps.ledger;
+    const done = (await ledger.read()).some(
+      ({ event }) => event.type === "task_check" && event.caseId === item.id,
+    );
+    if (done) return undefined;
+    const paths = changed.filter((path) => isTestFile(path) || TEST_FOLDER.test(path));
+    const tests = (
+      await Promise.all(
+        paths.map(async (path) => ({
+          path,
+          text: await readFile(join(this.deps.repo.worktree, path), "utf8").catch(() => ""),
+        })),
+      )
+    ).filter((test) => test.text);
+    this.deps.onActivity?.(`${item.title}: comparing its tests with its criteria`);
+    const stop = this.stopSignal();
+    try {
+      const gaps = await check(
+        {
+          title: item.title,
+          acceptanceCriteria: item.acceptanceCriteria,
+          changed,
+          tests,
+        },
+        stop.signal,
+      );
+      await ledger.append({ type: "task_check", caseId: item.id, attempt, gaps });
+      if (!gaps.length) return undefined;
+      return `A quick check compared your tests with this task's acceptance criteria and found:\n${gaps.map((gap) => `- ${gap}`).join("\n")}\nMake the tests check what the criteria ask, with the criteria's own values, and fix the code if they then fail; never change a value to match what the code returns. Where a point is wrong, say why in your summary and finish again. This check runs once.`;
+    } catch (error) {
+      await ledger.append({
+        type: "task_check",
+        caseId: item.id,
+        attempt,
+        gaps: [],
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    } finally {
+      stop.dispose();
+    }
   }
 
   /**
@@ -1461,16 +1547,32 @@ export class AutoRunEngine {
     )?.lastFailure;
     if (failure && !stoppedForTime(failure)) {
       const title = this.cases.find((item) => item.id === caseId)?.title ?? caseId;
-      await this.learn(
+      await this.learn([
         `"${oneLine(title)}" was not accepted; its last failure: ${oneLine(failure).slice(0, 300)}. If your work meets the same thing, avoid that mistake.`,
-      );
+      ]);
     }
   }
 
   /** A lesson for the cases after this one, recorded so a resumed run still has it. */
-  private async learn(...texts: string[]): Promise<void> {
-    this.learnings.push(...texts);
-    await this.deps.ledger.append({ type: "learned", texts });
+  private async learn(texts: string[], caseId?: string): Promise<void> {
+    this.learnings.push(...texts.map((text) => ({ text, caseId })));
+    await this.deps.ledger.append({ type: "learned", texts, ...(caseId ? { caseId } : {}) });
+  }
+
+  /**
+   * Dispatch's own lessons, from checks it ran, and those of workers whose case was
+   * accepted. An abandoned worker's guess passed on as fact misled later cases: "render
+   * with stars hangs in the container" was its own test failing to place its stars.
+   */
+  private async lessons(): Promise<string[]> {
+    const accepted = new Set(
+      (await this.deps.ledger.state()).cases
+        .filter((item) => item.stage === "accepted")
+        .map((item) => item.id),
+    );
+    return this.learnings
+      .filter((lesson) => !lesson.caseId || accepted.has(lesson.caseId))
+      .map((lesson) => lesson.text);
   }
 
   private async saveAttemptDraft(caseId: string, attempt: number, label: string): Promise<void> {
@@ -1807,14 +1909,16 @@ export function failureReason(
   const failed = verification.commands.filter((c) => c.exitCode !== 0 || c.error);
   if (violations.length) {
     const nested = violations.filter(isNestedRepository);
+    const unshipped = violations.filter((v) => v.endsWith(UNSHIPPED_DEPENDENCY));
+    const outside = violations.filter((v) => !nested.includes(v) && !unshipped.includes(v));
     return {
       signature: `scope: ${violations[0]}`,
       details: [
         nested.length
           ? `These folders are Git repositories inside the project, which Dispatch never commits: ${nested.join(", ")}. Remove their .git folders or the folders.`
           : "",
-        violations.length > nested.length
-          ? `These paths are outside what the case may change: ${violations.filter((v) => !isNestedRepository(v)).join(", ")}. Undo those changes.`
+        outside.length
+          ? `These paths are outside what the case may change: ${outside.join(", ")}. Undo those changes.`
           : "",
         // A task asked for an AGENTS.md the plan did not list, and
         // its worker kept the file twice, taking the refusal for a stray warning.
@@ -1823,6 +1927,9 @@ export function failureReason(
           : "",
         violations.some((v) => v.endsWith(" (frozen test)"))
           ? "Tests accepted earlier are frozen: put new tests in a new test file."
+          : "",
+        unshipped.length
+          ? `These dependencies point where a fresh checkout has nothing, so the project would build only in this run: ${unshipped.map((v) => v.replace(` ${UNSHIPPED_DEPENDENCY}`, "")).join(", ")}. Depend on each package by name and version instead: one already in the prepared cache resolves offline (for Cargo, build once with --offline). If it is not there, the run cannot add it: say so in your summary.`
           : "",
       ]
         .filter(Boolean)

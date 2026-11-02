@@ -210,7 +210,9 @@ describe("/auto in the terminal client", () => {
     await env.app.submitForTest('/auto start --image "node:22-slim"');
     expect(await env.notice()).toContain("is not a Git repository");
     await env.app.submitForTest("/auto run somewhere");
-    expect(await env.notice()).toContain("The runner starts from /auto start or /auto resume.");
+    expect(await env.notice()).toContain(
+      "The runner starts from /autopilot start or /autopilot resume.",
+    );
     await env.app.submitForTest('/auto start --image "unclosed');
     expect(await env.notice()).toContain("A quote is not closed.");
     await env.app.stop();

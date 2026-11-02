@@ -5,7 +5,7 @@ import {
   plannerEvalRow,
   scorePlannerEval,
 } from "@core/goal/planner-eval";
-import { parseAutoArgs } from "@tui/auto";
+import { parseAutoArgs } from "@tui/auto-args";
 import { describe, expect, it } from "vitest";
 
 const fixture = (extra: Partial<PlannerEvalFixture> = {}): PlannerEvalFixture => ({
