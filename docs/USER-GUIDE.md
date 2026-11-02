@@ -121,7 +121,8 @@ complete a command, or `/help` to list them all. The ones you will use most:
 
 `dispatch jobs …` drives Poundlock jobs by hand from a shell, and `dispatch autopilot …` runs
 Autopilot. Each has `--help`. `dispatch --json` prints the project's state and exits, for
-scripts.
+scripts. `/transcript verbose` shows every step of the work. Tab completion for your shell is in
+the [install guide](INSTALL.md#the-dispatch-command).
 
 ## Autopilot
 

@@ -1710,12 +1710,6 @@ function RoleModelField({
     destination === "external" && Boolean(probe) && !probe!.permissions.includes("external:invoke");
   return (
     <div className="field role-row">
-      {externalPermissionMissing ? (
-        <div className="notice error" role="alert">
-          This application token cannot use the selected external profile.{" "}
-          {grantPermissionHint(["external:invoke"], probe?.capabilities)}
-        </div>
-      ) : null}
       <label htmlFor={`role-${roleId}`}>
         {role.label}
         {role.required ? "" : " (optional)"}
@@ -1735,6 +1729,12 @@ function RoleModelField({
           onChange(copy);
         }}
       />
+      {externalPermissionMissing ? (
+        <div className="notice error" role="alert">
+          This application token cannot use the selected external profile.{" "}
+          {grantPermissionHint(["external:invoke"], probe?.capabilities)}
+        </div>
+      ) : null}
       <p className="hint">{role.hint}</p>
       {selected ? (
         <>

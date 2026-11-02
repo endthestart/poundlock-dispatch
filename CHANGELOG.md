@@ -1,11 +1,24 @@
 # Changelog
 
-## 0.3.0 (20 October 2026)
+## 0.3.1 (2 November 2026)
 
-The first public release, a developer preview. Autopilot is a preview. Tested with
-Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
+The first published release, a developer preview. Autopilot is a preview. Tested with
+Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0. 0.3.0 was tagged but never published,
+so what its section lists ships here too.
 
+- A role's missing-permission error shows under that role's model, not above its label, where
+  it read as the previous role's.
 - The terminal's Normal transcript says how many earlier steps it hides, as the app does.
+- `/role` can now finish setup on a fresh connection: it holds the first of the manager and
+  the worker until the other is chosen, then saves both. Until then the title says Choose
+  models, not Ready to discuss. `worker` is accepted for the interactive role.
+- The `dispatch` command starts faster: each command loads only what it uses, and the syntax
+  highlighter loads when the first code fence is drawn.
+- `dispatch completion <fish|zsh|bash>` prints a tab completion script, and `/help` lists the
+  terminal's commands.
+- `/models` and `jobs probe` name destinations and permissions in words, and `/models` stacks
+  its rows on a narrow terminal. The command line says `dispatch` and Autopilot throughout, and
+  `dispatch autopilot` commands mean the folder they are typed in unless told otherwise.
 - A dropped connection no longer ends a Planner call, and with it an unattended run: the
   Planner only reads, so it is asked again in the same session, up to twice.
 - Every Frontier-tier review now starts over. A requirement counts as shown only when that
@@ -113,6 +126,16 @@ Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
 - Electron 44.9.1, and undici 8.12.2 in place of the 8.10.2 that Pi pins and the 7.29.1 that
   the OpenAI client used, for October's advisories, among them an undici certificate-check
   bypass (CVE-2026-109383).
+- Packages carry the full license texts for this platform's dependencies, the bundled
+  fonts and the Catppuccin colours, and the app also carries Electron's own license and
+  Chromium's notices. The app runs the Electron the lockfile selects; an old packaging
+  override forced 44.3.0. `scripts/check-package.cjs` checks a built app.
+
+## 0.3.0 (20 October 2026)
+
+Tagged but never published. A developer preview. Autopilot is a preview. Tested with
+Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
+
 - The manager and the Autopilot Planner can search the web and read public pages through
   your own SearXNG instance. Set its address in Settings → Connection → Web search, then turn
   on "Web search for the manager and Planner" in a project's Network settings. Queries that
@@ -128,8 +151,8 @@ Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
   Poundlock release instead of a private build.
 - Packages carry the full license texts for this platform's dependencies, the bundled
   fonts and the Catppuccin colours, and the app also carries Electron's own license and
-  Chromium's notices. The app runs the Electron the lockfile selects; an old packaging
-  override forced 44.3.0. `scripts/check-package.cjs` checks a built app.
+  Chromium's notices. The app runs the Electron the lockfile selects (44.7.0); an old
+  packaging override forced 44.3.0. `scripts/check-package.cjs` checks a built app.
 - The terminal client and its installer require Node 22.19.0, as Pi 1.1.0 does.
 - GitHub CI runs every check on pull requests, forks included; a tag attaches the tested
   packages to a draft release only after approval. `tests/e2e/run.mjs` runs Dispatch

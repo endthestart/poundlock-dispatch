@@ -18,7 +18,7 @@ and suitability stay separate facts.
 
 | Dispatch | Poundlock | Toolkit |
 |---|---|---|
-| 0.3.0 | 0.3.0 (API 1, contract revision 5) | 0.5.0 |
+| 0.3.1 | 0.3.0 (API 1, contract revision 5) | 0.5.0 |
 
 Contract revision 5 adds the capacity queue. Dispatch asks to wait in line for a
 busy model; an older controller ignores that and answers at once, as before.
