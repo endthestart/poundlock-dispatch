@@ -844,6 +844,14 @@ describe("jobs probe", () => {
           source_limits: { bytes: 1, files: 1 },
         }),
       "GET /v1/models": () => json({ error: { message: "no" } }, 401),
+      // Any token may read these, so a jobs token learns what to call what it lacks.
+      "GET /api/v1/capabilities": () =>
+        json({
+          api_major: 1,
+          contract_revision: 5,
+          features: [],
+          token_permissions: [{ code: "jobs:submit", label: "Submit jobs with supplied files" }],
+        }),
       "GET /api/v1/usage": () => json({ error: { message: "no" } }, 401),
       "POST /v1/chat/completions": () => json({ error: { message: "no" } }, 401),
       ...extra,

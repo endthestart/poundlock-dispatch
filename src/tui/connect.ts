@@ -71,7 +71,7 @@ export async function connectController(
   if (!token && !keepsToken)
     throw new Error("Paste an application token from Poundlock Access, then run /connect again.");
 
-  await host.saveConnection({ url, token, roles: current.roles });
+  await host.saveConnection({ url, token });
   progress?.("Testing the connection to Poundlock…");
   const tested = await host.testConnection().finally(() => progress?.(undefined));
   const probe = tested.probe;

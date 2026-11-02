@@ -4,7 +4,6 @@ import { ApprovalBroker } from "@core/approval-broker";
 import {
   expectsRedTests,
   freezeAccepted,
-  frozenAmong,
   frozenDrift,
   frozenNamedIn,
   frozenRefusal,
@@ -12,12 +11,12 @@ import {
   keepFrozenCopies,
   restoreFrozenTests,
 } from "@core/frozen-tests";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import { ProjectOrchestrator } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { hostCommandPort } from "@runtime/host-command";
 import { describe, expect, it } from "vitest";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 describe("freezing tests", () => {
@@ -62,8 +61,6 @@ describe("freezing tests", () => {
       root,
     );
     expect(frozen.map((test) => test.path)).toEqual(["tests/test_a.py"]);
-    expect(frozenAmong(frozen, ["src.py"])).toEqual([]);
-    expect(frozenAmong(frozen, ["tests/test_a.py"])).toEqual(["tests/test_a.py"]);
     expect(await frozenDrift(frozen, root)).toEqual([]);
     await writeFile(join(root, "tests/test_a.py"), "assert 1\n");
     expect(await frozenDrift(frozen, root)).toEqual(["tests/test_a.py"]);
@@ -78,7 +75,6 @@ describe("freezing tests", () => {
     await writeFile(join(root, "Tests/ShellTests/SmokeTests.swift"), "@Test func a() {}\n");
     const stale = [{ path: built, sha256: "old", task: "Tests" }];
     expect(await frozenDrift(stale, root)).toEqual([]);
-    expect(frozenAmong(stale, [built])).toEqual([]);
     const frozen = await freezeAccepted(
       stale,
       { title: "Tests", writesTests: true },

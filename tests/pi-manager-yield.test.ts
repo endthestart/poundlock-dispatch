@@ -5,26 +5,9 @@ import type { ManagerToolHost, ProposePlanInput } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { compileTaskHints } from "@core/task-hints";
-import { compactionReserve, createPiManager, extractAssistantText } from "@runtime/pi-manager";
+import { compactionReserve, createPiManager } from "@runtime/pi-manager";
 import { describe, expect, it, vi } from "vitest";
 import { tempDir } from "./support/temp-dir";
-
-it("keeps text streamed before a tool call in the completed manager reply", () => {
-  const messages = [
-    { role: "assistant", content: [{ type: "text", text: "Earlier conversation" }] },
-    { role: "user", content: "New question" },
-    {
-      role: "assistant",
-      content: [
-        { type: "text", text: "Detailed analysis" },
-        { type: "toolCall", name: "write_notes" },
-      ],
-    },
-    { role: "toolResult", content: "Notes saved" },
-    { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
-  ];
-  expect(extractAssistantText({ messages }, 1)).toBe("Detailed analysis\n\nFinal answer");
-});
 
 async function withSyntheticManager(
   response: (request: number) => { delta: Record<string, unknown>; finishReason: string },
@@ -35,7 +18,7 @@ async function withSyntheticManager(
     requests: Array<{ messages?: Array<{ role: string; content: unknown }> }>,
     store: FileStore,
   ) => Promise<void>,
-  extra: { webSearch?: { url: string } } = {},
+  extra: Partial<Parameters<typeof createPiManager>[0]> = {},
 ) {
   const root = await tempDir("dispatch-pi-response-");
   const folder = join(root, "project");
@@ -239,12 +222,94 @@ it("reports a provider token-limit response instead of returning an empty reply"
   );
 }, 15000);
 
+it("asks to cache an Anthropic manager's prompt, also when OpenRouter serves it", async () => {
+  await withSyntheticManager(
+    () => ({ delta: { role: "assistant", content: "Understood." }, finishReason: "stop" }),
+    async (manager, project, folder, requests) => {
+      await manager.runTurn({
+        project,
+        workspace: folder,
+        prompt: "Plan the work",
+        host: {} as ManagerToolHost,
+      });
+      expect(JSON.stringify(requests[0].messages)).toContain(
+        '"cache_control":{"type":"ephemeral"}',
+      );
+    },
+    { route: { provider: "openrouter", servedModel: "openrouter/anthropic/claude-sonnet-5.5" } },
+  );
+}, 15000);
+
+it("runs no tool call from a reply cut off at the output limit, and says why", async () => {
+  await withSyntheticManager(
+    (request) =>
+      request === 1 ? { ...planCall(validPlan()), finishReason: "length" } : planCall(validPlan()),
+    async (manager, project, folder, requests) => {
+      const host = {
+        proposePlan: vi.fn(async () => ({ text: "Plan recorded.", revise: false })),
+      } as unknown as ManagerToolHost;
+      const result = await manager.runTurn({
+        project,
+        workspace: folder,
+        prompt: "Plan the work",
+        host,
+      });
+      expect(host.proposePlan).toHaveBeenCalledOnce();
+      expect(result.toolTrace).toEqual([
+        { name: "propose_plan", summary: "propose_plan", error: true },
+        { name: "propose_plan", summary: "propose_plan", error: false },
+      ]);
+      const retryContext = JSON.stringify(requests[1].messages);
+      expect(retryContext).toContain("hit the output token limit");
+      expect(retryContext).toContain("only the first milestone's tasks");
+      expect(retryContext).not.toContain("plan_validation_failed");
+    },
+  );
+}, 15000);
+
+it("corrects a cut-off plan and then an invalid one, each once", async () => {
+  await withSyntheticManager(
+    (request) =>
+      request === 1
+        ? { ...planCall(validPlan()), finishReason: "length" }
+        : request === 2
+          ? planCall({ ...validPlan(), tasks: JSON.stringify(validPlan().tasks) })
+          : planCall(validPlan()),
+    async (manager, project, folder, requests) => {
+      const host = {
+        proposePlan: vi.fn(async () => ({ text: "Plan recorded.", revise: false })),
+      } as unknown as ManagerToolHost;
+      await manager.runTurn({ project, workspace: folder, prompt: "Plan the work", host });
+      expect(host.proposePlan).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(3);
+    },
+  );
+}, 15000);
+
+it("keeps the turn open for one revision when the plan review asks for changes", async () => {
+  // Ending the turn at propose_plan left a review's six requested changes unread.
+  await withSyntheticManager(
+    () => planCall(validPlan()),
+    async (manager, project, folder, requests) => {
+      const proposePlan = vi
+        .fn()
+        .mockResolvedValueOnce({ text: "Plan recorded. Verdict: revise", revise: true })
+        .mockResolvedValueOnce({ text: "Plan recorded.", revise: false });
+      const host = { proposePlan } as unknown as ManagerToolHost;
+      await manager.runTurn({ project, workspace: folder, prompt: "Plan the work", host });
+      expect(proposePlan).toHaveBeenCalledTimes(2);
+      expect(requests).toHaveLength(2);
+      expect(JSON.stringify(requests[1].messages)).toContain("Verdict: revise");
+    },
+  );
+}, 15000);
+
 it("accepts a valid plan with tasks as an array", async () => {
   await withSyntheticManager(
     () => planCall(validPlan()),
     async (manager, project, folder, requests) => {
       const host = {
-        proposePlan: vi.fn(async () => "Plan recorded."),
+        proposePlan: vi.fn(async () => ({ text: "Plan recorded.", revise: false })),
       } as unknown as ManagerToolHost;
       const result = await manager.runTurn({
         project,
@@ -271,7 +336,7 @@ it.each([
       (request) => planCall(request === 1 ? { ...validPlan(), tasks } : validPlan()),
       async (manager, project, folder, requests) => {
         const host = {
-          proposePlan: vi.fn(async () => "Plan recorded."),
+          proposePlan: vi.fn(async () => ({ text: "Plan recorded.", revise: false })),
         } as unknown as ManagerToolHost;
         const result = await manager.runTurn({
           project,
@@ -338,7 +403,7 @@ it("passes a task's context note, files to touch and reuse through propose_plan"
     () => planCall(withHints(hints)),
     async (manager, project, folder, requests) => {
       const host = {
-        proposePlan: vi.fn(async () => "Plan recorded."),
+        proposePlan: vi.fn(async () => ({ text: "Plan recorded.", revise: false })),
       } as unknown as ManagerToolHost;
       await manager.runTurn({ project, workspace: folder, prompt: "Plan the work", host });
       expect(requests).toHaveLength(1);
@@ -369,7 +434,7 @@ it.each([
           // What the real host does: the plan compiler refuses an unusable hint.
           proposePlan: vi.fn(async (input: ProposePlanInput) => {
             for (const task of input.tasks) compileTaskHints(task);
-            return "Plan recorded.";
+            return { text: "Plan recorded.", revise: false };
           }),
         } as unknown as ManagerToolHost;
         await manager.runTurn({ project, workspace: folder, prompt: "Plan the work", host });
@@ -389,7 +454,7 @@ it("stops after one failed plan correction without persisting a partial plan", a
     () => planCall({ ...validPlan(), tasks: JSON.stringify(validPlan().tasks) }),
     async (manager, project, folder, requests, store) => {
       const host = {
-        proposePlan: vi.fn(async () => "Plan recorded."),
+        proposePlan: vi.fn(async () => ({ text: "Plan recorded.", revise: false })),
       } as unknown as ManagerToolHost;
       await expect(
         manager.runTurn({

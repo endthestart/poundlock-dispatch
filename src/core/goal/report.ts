@@ -5,9 +5,16 @@
  */
 import type { AutoRunFile } from "@core/auto/runs";
 import { type AutoRunState, OUTCOME_LABELS, processedTokens } from "@shared/auto-run";
-import type { PlanRecord } from "@shared/types";
+import { goalMilestones } from "@shared/milestones";
+import type { PlanRecord, Reference } from "@shared/types";
 
-export function goalReport(run: AutoRunFile, state: AutoRunState, plan?: PlanRecord): string {
+export function goalReport(
+  run: AutoRunFile,
+  state: AutoRunState,
+  plan?: PlanRecord,
+  /** The run's reference packet: what the Planner read on the web and saved for the workers. */
+  references: Reference[] = [],
+): string {
   const lines: string[] = [];
   const outcome = state.outcome ? OUTCOME_LABELS[state.outcome] : "still running";
   lines.push(`# Autopilot run ${run.runId}: ${outcome}`, "");
@@ -30,10 +37,11 @@ export function goalReport(run: AutoRunFile, state: AutoRunState, plan?: PlanRec
     lines.push("");
   }
 
-  if (plan?.milestones?.length) {
+  const milestones = plan ? goalMilestones(plan) : [];
+  if (milestones.length) {
     lines.push("## Milestones", "");
     const progress = new Map((state.milestones ?? []).map((item) => [item.id, item]));
-    for (const milestone of plan.milestones) {
+    for (const milestone of milestones) {
       const seen = progress.get(milestone.id);
       const where = !seen
         ? "not reached"
@@ -65,6 +73,12 @@ export function goalReport(run: AutoRunFile, state: AutoRunState, plan?: PlanRec
     for (const item of unfinished)
       lines.push(`- ${item.title}: ${item.stage}${item.reason ? ` — ${item.reason}` : ""}`);
     lines.push("");
+  }
+
+  if (references.length) {
+    lines.push("## What the Planner read for the workers", "");
+    for (const entry of references) lines.push(`- ${entry.id} [${entry.title}](${entry.url})`);
+    lines.push("", "Excerpts are in the run folder's references.json.", "");
   }
 
   if (state.ownerMessages?.length) {

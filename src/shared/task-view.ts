@@ -1,5 +1,6 @@
-import type { CaseStage } from "./auto-run.js";
-import type { AttemptRecord, TaskRecord, TaskStatus } from "./types.js";
+import type { AutopilotView, CaseStage } from "./auto-run.js";
+import { milestoneGroups } from "./milestones.js";
+import type { AttemptRecord, Milestone, TaskRecord, TaskStatus } from "./types.js";
 
 type TaskStateTone =
   | "accepted"
@@ -159,7 +160,11 @@ export function attemptStatusLabel(status: AttemptRecord["status"]): string {
 export function managerDecisionText(task: Pick<TaskRecord, "status" | "attempts">): string {
   switch (task.status) {
     case "applied":
-      return "Accepted by the Project Manager.";
+      // Autopilot's tasks carry no interactive attempts: its checks verified them,
+      // and merging its work marked them applied.
+      return task.attempts.length
+        ? "Accepted by the Project Manager."
+        : "Verified by Autopilot's checks and merged into the folder; not reviewed.";
     case "needs_review":
       return "Waiting for the Project Manager's review.";
     case "repairing":
@@ -171,4 +176,62 @@ export function managerDecisionText(task: Pick<TaskRecord, "status" | "attempts"
     default:
       return task.attempts.length ? "No decision yet." : "Not started.";
   }
+}
+
+/** Where Autopilot has a task in its run; merged or dropped work is the board's own again. */
+export function taskStage(
+  task: TaskRecord,
+  stages: ReadonlyMap<string, CaseStage>,
+): CaseStage | undefined {
+  return ["applied", "cancelled"].includes(task.status) ? undefined : stages.get(task.id);
+}
+
+export const AUTOPILOT_BOARD_HINT =
+  "Verified means the project's checks passed in Autopilot's container; nobody has reviewed the work yet. Merge it from the Autopilot panel when the run ends.";
+
+export interface AutopilotBoard {
+  stages: ReadonlyMap<string, CaseStage>;
+  progress: string;
+  groups: Array<{
+    id: string;
+    title?: string;
+    verified: number;
+    /** The tasks counted: those shown, not those left behind. */
+    total: number;
+    tasks: TaskRecord[];
+    /** Did not finish; the Planner replans what they were for. */
+    unfinished: TaskRecord[];
+  }>;
+}
+
+/** The board while Autopilot builds it: each task's stage, the progress line and milestone groups. */
+export function autopilotBoard(
+  tasks: TaskRecord[],
+  milestones: Milestone[],
+  autopilot: Pick<AutopilotView, "board" | "cases"> | undefined,
+): AutopilotBoard | undefined {
+  if (!autopilot?.board || !autopilot.cases.length) return undefined;
+  const stages = new Map(autopilot.cases.map((item) => [item.id, item.stage]));
+  // Earlier runs' work counts too: merged tasks are done, and tasks an earlier run left
+  // blocked were replanned since. Counting only this run's stages showed a finished M1
+  // as "0 of 95" (owner, 19 Oct).
+  const leftBehind = (task: TaskRecord) =>
+    autopilotUnfinished(stages.get(task.id)) || (!stages.has(task.id) && task.status === "blocked");
+  return {
+    stages,
+    progress: autopilotProgressLine([...stages.values()]),
+    groups: milestoneGroups(tasks, milestones).map((group) => {
+      const unfinished = group.tasks.filter(leftBehind);
+      return {
+        id: group.id,
+        ...(group.title ? { title: group.title } : {}),
+        verified: group.tasks.filter(
+          (task) => stages.get(task.id) === "accepted" || task.status === "applied",
+        ).length,
+        total: group.tasks.length - unfinished.length,
+        tasks: group.tasks.filter((task) => !leftBehind(task)),
+        unfinished,
+      };
+    }),
+  };
 }

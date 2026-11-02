@@ -5,6 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { failureReason } from "@core/auto/engine";
 import { AutoLedger } from "@core/auto/ledger";
 import { AutoPaths, exportRun } from "@core/auto/runs";
 import { runsOnHost, scopeViolations } from "@core/auto/scope";
@@ -131,4 +132,16 @@ describe("files that run on the owner's machine", () => {
       "# Files that run on your machine once applied (review these first): .vscode/tasks.json, package.json (scripts)",
     );
   });
+});
+
+it("tells a worker to delete a host file its task asked for, and why", () => {
+  // A worker kept the AGENTS.md its task named, twice.
+  const { details } = failureReason(
+    { finish: "done", summary: "scaffolded" },
+    { passed: true, commands: [{ command: "cargo test", exitCode: 0, output: "ok" }] },
+    ["AGENTS.md"],
+    false,
+  );
+  expect(details).toContain("Delete AGENTS.md, even if your task asks for it");
+  expect(details).toContain("unless the plan lists it among the task's files");
 });

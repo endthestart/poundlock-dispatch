@@ -16,6 +16,8 @@ import {
   destinationLabel,
   effectiveDestination,
   endpointKindLabel,
+  guessRoleMap,
+  pricingSourceLabel,
   profileDisplayName,
   ROLE_DEFINITIONS,
   type RoleMap,
@@ -28,7 +30,9 @@ import {
   type AppStateView,
   type DataDestination,
   EXAMPLE_CONTROLLER_URL,
+  grantPermissionHint,
   type ProfilePreference,
+  permissionLabel,
   type ReasoningChoice,
 } from "@shared/types";
 import type { ComposerInfoletId } from "@shared/ui-preferences";
@@ -42,6 +46,7 @@ export type SettingsNav =
   | "models-manager"
   | "models-worker"
   | "models-verifier"
+  | "models-fallback"
   | "models-ladder"
   | "models-autocomplete"
   | "permissions"
@@ -63,6 +68,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { id: "models-manager", label: "Manager", group: MODELS_GROUP },
   { id: "models-worker", label: "Worker", group: MODELS_GROUP },
   { id: "models-verifier", label: "Verifier", group: MODELS_GROUP },
+  { id: "models-fallback", label: "Local fallback", group: MODELS_GROUP },
   { id: "models-ladder", label: "Model ladder", group: MODELS_GROUP },
   { id: "models-autocomplete", label: "Autocomplete", group: MODELS_GROUP },
   { id: "permissions", label: "Permissions" },
@@ -70,7 +76,6 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { id: "integrations", label: "Integrations" },
 ];
 
-/** Groups consecutive same-`group` items together; ungrouped items pass through unchanged. */
 /**
  * Output budget offered for a manager running on this computer. It was 2,048,
  * which is exactly the limit that truncated a detailed plan in the workstation
@@ -79,6 +84,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
  */
 const DEFAULT_LOCAL_MANAGER_OUTPUT_TOKENS = 8192;
 
+/** Groups consecutive same-`group` items together; ungrouped items pass through unchanged. */
 function groupSettingsNavItems(
   items: SettingsNavItem[],
 ): Array<
@@ -96,16 +102,23 @@ function groupSettingsNavItems(
   return rows;
 }
 
+/** A role map being edited, with per-profile preferences that follow the saved ones. */
+function useRoleDraft(connection: AppStateView["connection"], suggested?: RoleMap) {
+  // Suggestions to confirm, under the saved roles: nothing is saved until Save.
+  const [roles, setRoles] = useState<RoleMap>(() => ({ ...suggested, ...connection.roles }));
+  const [preferences, setPreferences] = useState<ProfilePreferences>(
+    () => connection.profiles ?? {},
+  );
+  useEffect(() => setPreferences(connection.profiles ?? {}), [connection.profiles]);
+  return { roles, setRoles, preferences, setPreferences };
+}
+
 function message(caught: unknown): string {
   return caught instanceof Error ? caught.message : String(caught);
 }
 
-async function testConnection(
-  address: string,
-  token: string,
-  roles: RoleMap,
-): Promise<AppStateView> {
-  await window.poundlockDispatch.connectionSave({ url: address.trim(), token, roles });
+async function testConnection(address: string, token: string): Promise<AppStateView> {
+  await window.poundlockDispatch.connectionSave({ url: address.trim(), token });
   return (await window.poundlockDispatch.connectionTest()) as AppStateView;
 }
 
@@ -123,11 +136,12 @@ export function SetupWizard({
   const [token, setToken] = useState("");
   const [probe, setProbe] = useState(state.probe);
   useEffect(() => setProbe(state.probe), [state.probe]);
-  const [roles, setRoles] = useState<RoleMap>(state.connection.roles);
-  const [preferences, setPreferences] = useState<ProfilePreferences>(
-    () => state.connection.profiles ?? {},
+  // Opened on Models with a saved connection, it suggests at once, as Test connection
+  // does, rather than showing empty choices until Back and Test (UX review, 30 Oct).
+  const { roles, setRoles, preferences, setPreferences } = useRoleDraft(
+    state.connection,
+    step === "roles" && state.probe?.ok ? guessRoleMap(state.probe) : undefined,
   );
-  useEffect(() => setPreferences(state.connection.profiles ?? {}), [state.connection.profiles]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const mapped = roleMapReady(roles);
@@ -156,11 +170,12 @@ export function SetupWizard({
                 setBusy(true);
                 setError(undefined);
                 try {
-                  const tested = await testConnection(address, token, roles);
+                  const tested = await testConnection(address, token);
                   setProbe(tested.probe);
                   onState(tested);
                   if (tested.probe?.ok) {
-                    setRoles(tested.connection.roles);
+                    // A suggestion to confirm, not a choice: nothing is saved until Save.
+                    setRoles({ ...guessRoleMap(tested.probe), ...tested.connection.roles });
                     setStep("roles");
                   }
                 } catch (caught) {
@@ -341,6 +356,9 @@ export function SettingsPage({
           {nav === "models-verifier" ? (
             <SettingsModelsVerifier state={state} onState={onState} />
           ) : null}
+          {nav === "models-fallback" ? (
+            <SettingsModelsFallback state={state} onState={onState} />
+          ) : null}
           {nav === "models-ladder" ? <SettingsEscalation state={state} onState={onState} /> : null}
           {nav === "models-autocomplete" ? (
             <SettingsModelsAutocomplete state={state} onState={onState} />
@@ -378,7 +396,7 @@ function SettingsConnection({
           event.preventDefault();
           if (save.saving || !address.trim()) return;
           void save.save(async () => {
-            const tested = await testConnection(address, token, state.connection.roles);
+            const tested = await testConnection(address, token);
             setProbe(tested.probe);
             onState(tested);
             setToken("");
@@ -502,7 +520,7 @@ function ServerInformation({
         <dt>Profiles</dt>
         <dd>
           {probe
-            ? `${probe.interactiveModels.length} interactive · ${probe.durableModels.length} job`
+            ? `${probe.interactiveModels.length} interactive · ${probe.durableModels.length} for dispatch jobs`
             : "Unknown"}
         </dd>
         <dt>Last updated</dt>
@@ -559,16 +577,12 @@ function RoleDefaultsPage({
 }: {
   state: AppStateView;
   onState: (state: AppStateView) => void;
-  roleId: "manager" | "interactive" | "snippet" | "verifier";
+  roleId: "manager" | "interactive" | "snippet" | "verifier" | "fallback";
   title: string;
   description: string;
   children?: ReactNode;
 }) {
-  const [roles, setRoles] = useState<RoleMap>(state.connection.roles);
-  const [preferences, setPreferences] = useState<ProfilePreferences>(
-    () => state.connection.profiles ?? {},
-  );
-  useEffect(() => setPreferences(state.connection.profiles ?? {}), [state.connection.profiles]);
+  const { roles, setRoles, preferences, setPreferences } = useRoleDraft(state.connection);
   const save = useSaveState();
   const catalog = useMemo(() => (state.probe ? catalogFromProbe(state.probe) : []), [state.probe]);
   const mapped = roleMapReady(roles);
@@ -687,6 +701,24 @@ function SettingsModelsVerifier({
       roleId="verifier"
       title="Verifier"
       description="A second opinion from your strongest model. It reviews each new plan against what you asked for before you approve it, and at the end of each round checks, read-only, that the accepted code and tests really show every requirement marked done. It runs a few times per round with a small context, so a slower or costlier model is affordable here. Optional: unset, the Worker does the round-end check and plans are not reviewed."
+    />
+  );
+}
+
+function SettingsModelsFallback({
+  state,
+  onState,
+}: {
+  state: AppStateView;
+  onState: (state: AppStateView) => void;
+}) {
+  return (
+    <RoleDefaultsPage
+      state={state}
+      onState={onState}
+      roleId="fallback"
+      title="Local fallback"
+      description="When a cloud model's provider refuses for a spending limit, such as OpenRouter's weekly limit, the Manager, Planner, Verifier or Worker using it switches once to this model on your own machines, for the rest of that run or conversation. The run log records the switch and you are told. Only models within your network can be chosen. Optional: unset, that work stops instead."
     />
   );
 }
@@ -879,6 +911,9 @@ function LocalManagerSettings({
               void test.save(async () => {
                 setTestResult(undefined);
                 const result = await window.poundlockDispatch.testLocalManager(localSettings);
+                // The server's own limits are the defaults; the owner can still lower them.
+                if (result.reportedContextTokens) setLocalContext(result.reportedContextTokens);
+                if (result.reportedMaxOutputTokens) setLocalOutput(result.reportedMaxOutputTokens);
                 const reported = [
                   result.reportedContextTokens
                     ? `${result.reportedContextTokens.toLocaleString()} context`
@@ -1638,7 +1673,7 @@ function RoleModelField({
   preferences,
   onPreferencesChange,
 }: {
-  roleId: "manager" | "interactive" | "snippet" | "verifier";
+  roleId: "manager" | "interactive" | "snippet" | "verifier" | "fallback";
   roles: RoleMap;
   catalog: CatalogProfile[];
   probe?: AppStateView["probe"];
@@ -1677,9 +1712,8 @@ function RoleModelField({
     <div className="field role-row">
       {externalPermissionMissing ? (
         <div className="notice error" role="alert">
-          This application token cannot use the selected external profile. In Poundlock Access,
-          create a replacement token with Call external providers, save it under Connection, then
-          test again.
+          This application token cannot use the selected external profile.{" "}
+          {grantPermissionHint(["external:invoke"], probe?.capabilities)}
         </div>
       ) : null}
       <label htmlFor={`role-${roleId}`}>
@@ -1711,7 +1745,8 @@ function RoleModelField({
           {roleId === "manager" && destination === "external" ? (
             <p className="hint">
               Saving this default authorizes this exact profile route to receive selected project
-              context. Poundlock also requires the token permission Call external providers.
+              context. Poundlock also requires the token permission “
+              {permissionLabel("external:invoke", probe?.capabilities)}”.
             </p>
           ) : null}
           <div className="subsection">
@@ -1788,18 +1823,6 @@ function RoleModelField({
         </p>
       ) : null}
     </div>
-  );
-}
-
-function pricingSourceLabel(source: string): string {
-  return (
-    {
-      litellm_route: "gateway route price",
-      litellm_cost_map: "gateway cost map",
-      openrouter_catalog: "OpenRouter catalog",
-      local: "local",
-      operator: "set by the operator",
-    }[source] ?? source
   );
 }
 

@@ -5,17 +5,20 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import { AutoLedger } from "@core/auto/ledger";
 import { AutoPaths, type AutoRunFile, projectKey, writeRunFile } from "@core/auto/runs";
+import { FolderLock } from "@core/folder-lock";
 import { DispatchHost, type HostDependencies, type HostFacilities } from "@core/host/dispatch-host";
 import { ProjectOrchestrator } from "@core/orchestration";
 import { ProjectLifecycle } from "@core/project-lifecycle";
 import { hostCommandPort } from "@runtime/host-command";
-import type { AppStateView } from "@shared/types";
+import { DEFAULT_AUTO_LIMITS } from "@shared/auto-run";
+import type { AppStateView, ConnectionAddress } from "@shared/types";
 import { describe, expect, it } from "vitest";
+import { fakePoundlock } from "./support/fake-poundlock";
 import { tempDir } from "./support/temp-dir";
 import {
   countingManager,
@@ -29,6 +32,7 @@ async function hostFixture(options?: {
   facilities?: Partial<HostFacilities>;
   /** Replaces the scripted planner when a test cares about how a turn behaves, not what it plans. */
   manager?: import("@core/orchestration").ManagerPort;
+  folderLock?: FolderLock;
 }) {
   const fixture = await workflowFixture({ prefix: "dispatch-host-" });
   const counting = countingManager(fixture.store, { tasks: [planTask("Task one")] });
@@ -53,6 +57,7 @@ async function hostFixture(options?: {
         clientFor: async () => fixture.backend,
       }),
     lifecycle: (dependencies) => new ProjectLifecycle(dependencies),
+    ...(options?.folderLock ? { folderLock: options.folderLock } : {}),
   };
   const host = new DispatchHost(
     { dataRoot: fixture.store.layout.root, ...options?.facilities },
@@ -237,6 +242,54 @@ describe("DispatchHost action queue", () => {
   });
 });
 
+describe("DispatchHost connection", () => {
+  it("saves only the address and token: roles come only from Save models, which checks them", async () => {
+    // The wizard's Test connection saved its unconfirmed suggestions, an external worker among them, as the roles (30 Oct).
+    const { fixture, host } = await hostFixture();
+    const before = await fixture.store.getConnection();
+    const sent = {
+      url: before.url,
+      token: before.token,
+      roles: { interactive: { profileId: "external-frontier", profileName: "external-frontier" } },
+    };
+    // The renderer's IPC carries whatever it sends, whatever the type says.
+    await host.saveConnection(sent as unknown as ConnectionAddress);
+    expect((await fixture.store.getConnection()).roles).toEqual(before.roles);
+  });
+});
+
+describe("DispatchHost folder lock", () => {
+  it("takes the folder on its next poll once the client driving it has exited", async () => {
+    // UX review, 30 Oct: a client opened while another drove the folder watched
+    // nobody for the rest of its session after that one crashed.
+    const locks = await tempDir("host-locks-");
+    const other = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+      stdio: "ignore",
+    });
+    const { fixture, host } = await hostFixture({
+      folderLock: new FolderLock(locks, { hostApp: "gui", dataRoot: "/data/gui" }),
+    });
+    try {
+      const theirs = new FolderLock(locks, { hostApp: "tui", dataRoot: "/data/tui" });
+      await theirs.acquire(fixture.folder);
+      const file = (await readdir(locks)).find((name) => name.endsWith(".json"))!;
+      const held = JSON.parse(await readFile(join(locks, file), "utf8"));
+      await writeFile(join(locks, file), JSON.stringify({ ...held, pid: other.pid }));
+      await host.selectProject(fixture.project.id);
+      expect((await host.getState()).watching?.heldBy).toBeDefined();
+      other.kill("SIGKILL");
+      await new Promise((resolve) => other.once("exit", resolve));
+      host.resumePolling();
+      await expect
+        .poll(async () => (await host.getState()).watching, { timeout: 10_000 })
+        .toBeUndefined();
+    } finally {
+      other.kill("SIGKILL");
+      host.stopPolling();
+    }
+  });
+});
+
 describe("DispatchHost decisions", () => {
   it("records every approval decision in the transcript both front ends read", async () => {
     const { fixture, host, approvals } = await hostFixture();
@@ -300,6 +353,19 @@ describe("DispatchHost facilities", () => {
     await host.grantReadFile(fixture.project.id);
     const project = await fixture.store.getProject(fixture.project.id);
     expect(project?.policy.readGrants).toEqual([`${fixture.folder}/notes.txt`]);
+  });
+
+  it("records a typed path the same way, and refuses one that does not exist", async () => {
+    const { fixture, host } = await hostFixture();
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(`${fixture.folder}/.env`, "KEY=1");
+    await fs.symlink(`${fixture.folder}/.env`, `${fixture.folder}/env-link`);
+    await host.grantReadFile(fixture.project.id, `${fixture.folder}/env-link`);
+    const project = await fixture.store.getProject(fixture.project.id);
+    expect(project?.policy.readGrants).toEqual([await fs.realpath(`${fixture.folder}/.env`)]);
+    await expect(
+      host.grantReadFile(fixture.project.id, `${fixture.folder}/missing`),
+    ).rejects.toThrow(/ENOENT/);
   });
 });
 
@@ -477,6 +543,27 @@ describe("DispatchHost reasoning and model settings", () => {
     expect((await fixture.store.getProject(project.id))?.policy.roots).toEqual(stored);
   });
 
+  it("tests a connection without choosing the owner's models", async () => {
+    // A fresh connect bound the first listed models and recorded
+    // destination approvals nobody gave. The wizard suggests; only Save binds.
+    const server = await fakePoundlock({ respond: () => ({ text: "unused" }) });
+    try {
+      const { fixture, host } = await hostFixture();
+      const connection = await fixture.store.getConnection();
+      await fixture.store.saveConnection({
+        ...connection,
+        url: server.url,
+        token: server.token,
+        roles: {},
+      });
+      const state = await host.testConnection();
+      expect(state.probe?.ok, `${state.probe?.error} ${state.probe?.hint}`).toBe(true);
+      expect((await fixture.store.getConnection()).roles).toEqual({});
+    } finally {
+      await server.close();
+    }
+  });
+
   it("saving a profile's destination keeps its other saved settings", async () => {
     const { fixture, host } = await hostFixture();
     const connection = await fixture.store.getConnection();
@@ -523,6 +610,7 @@ describe("Autopilot in the app (ADR 016)", () => {
       ],
       image: "toolchain:test",
       model: "coding",
+      limits: DEFAULT_AUTO_LIMITS,
     } as unknown as AutoRunFile);
     const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", runDir], {
       stdio: "ignore",
@@ -556,9 +644,63 @@ describe("Autopilot in the app (ADR 016)", () => {
       expect((await new AutoLedger(run.runDir).readInbox()).at(-1)).toMatchObject({
         cmd: "stop_now",
       });
+      // An interrupted run still holds the project: a message waits for its resume.
+      run.stop();
+      await expect.poll(async () => (await host.getState()).autopilot?.phase).toBe("interrupted");
+      await host.sendMessage("Thumbnails at 256 px");
+      expect((await new AutoLedger(run.runDir).readInbox()).at(-1)).toMatchObject({
+        cmd: "message",
+        text: "Thumbnails at 256 px",
+      });
+      expect((await fixture.store.getMessages(fixture.project.id)).at(-1)?.text).toContain(
+        "the run reads it when you resume",
+      );
     } finally {
       run.stop();
     }
+  });
+
+  it("sends the owner's answer to a run that ended waiting for it, and a stopped run's words to the manager", async () => {
+    // UX review, 30 Oct: a blocked run's card said "Needs you", but the composer
+    // sent the answer to a manager turn, and the resumed run never read it.
+    const { fixture, host, paths } = await autopilotFixture();
+    const run = await liveRun(paths, fixture.folder);
+    run.stop();
+    await rm(join(run.runDir, "runner.pid"));
+    const ledger = new AutoLedger(run.runDir);
+    await ledger.append({
+      type: "run_ended",
+      outcome: "blocked_for_input",
+      reason: "A task needs the owner's answer before work can go on.",
+    });
+    await host.selectProject(fixture.project.id);
+    await expect.poll(async () => (await host.getState()).autopilot?.phase).toBe("ended");
+    await host.sendMessage("Put the rating control under the loupe");
+    expect((await ledger.readInbox()).at(-1)).toMatchObject({
+      cmd: "message",
+      text: "Put the rating control under the loupe",
+    });
+    await ledger.append({
+      type: "run_ended",
+      outcome: "cancelled_after_checkpoint",
+      reason: "stopped by the owner",
+    });
+    await host.sendMessage("Let's change the plan");
+    expect((await ledger.readInbox()).at(-1)?.text).toBe("Put the rating control under the loupe");
+  });
+
+  it("leaves the plan unapproved when the start is refused before it has a run", async () => {
+    // A TUI start refused for an external worker had already approved the
+    // plan, and the screen said approved work was ready.
+    const { fixture, host, spawned } = await autopilotFixture();
+    await host.selectProject(fixture.project.id);
+    await host.sendMessage("build it");
+    await expect
+      .poll(async () => Boolean(await fixture.store.getPlan(fixture.project.id)))
+      .toBe(true);
+    await expect(host.autopilotStart({ image: "toolchain:test" })).rejects.toThrow();
+    expect((await fixture.store.getPlan(fixture.project.id))?.approved).toBeFalsy();
+    expect(spawned).toEqual([]);
   });
 
   it("changes nothing when the runner command cannot be used", async () => {

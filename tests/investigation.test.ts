@@ -68,6 +68,47 @@ describe("investigate", () => {
     expect(messages.some((m) => m.text.startsWith("Investigating with coding"))).toBe(true);
   });
 
+  it("asks the local fallback, once, after a spending refusal, and keeps it for the project", async () => {
+    const f = await workflowFixture({ prefix: "investigate-fallback-" });
+    const connection = await f.store.getConnection();
+    await f.store.saveConnection({
+      ...connection,
+      roles: {
+        ...connection.roles,
+        fallback: { profileId: "local", profileName: "local", source: "interactive" },
+      },
+    });
+    const models = await f.backend.listInteractiveModels();
+    f.backend.listInteractiveModels = async () => [
+      ...models,
+      { ...models[0], id: "local", profileId: "local", dataDestination: "operator_network" },
+    ];
+    const seen: string[] = [];
+    const engine = engineFor(
+      f,
+      investigatingManager(() => undefined),
+      {
+        async run(ctx: WorkerContext): Promise<WorkerResult> {
+          seen.push(ctx.model.id);
+          return {
+            output: ctx.model.id === "local" ? "No findings." : "",
+            changedFiles: [],
+            patch: "",
+            verification: unverified,
+            ...(ctx.model.id === "local" ? {} : { error: "402 Insufficient credits" }),
+          };
+        },
+      },
+    );
+    await engine.sendMessage(f.project.id, "Review commits a..b");
+    await engine.sendMessage(f.project.id, "And again");
+    expect(seen).toEqual(["coding", "local", "local"]);
+    const notices = (await f.store.getMessages(f.project.id)).filter((m) =>
+      m.text.startsWith("Worker switched from coding to the local fallback local"),
+    );
+    expect(notices).toHaveLength(1);
+  });
+
   it("leaves a published plan as it was", async () => {
     const f = await workflowFixture({ prefix: "investigate-plan-" });
     const seen: WorkerContext[] = [];

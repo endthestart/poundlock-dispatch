@@ -6,10 +6,6 @@ import {
 import { activityLogKey, LIVE_WORK_LIMIT } from "@shared/live-work-view";
 import type { LiveWorkEntry } from "@shared/types";
 
-export type { LiveWorkEntry };
-export type { LiveWorkDockView } from "@shared/live-work-view";
-export { activityLogKey, LIVE_WORK_LIMIT, liveWorkDockView } from "@shared/live-work-view";
-
 interface WorkerActivityEvent extends PiCompactionSignal {
   toolName?: string;
   args?: unknown;

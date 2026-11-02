@@ -368,9 +368,14 @@ function probe(result: ConnectionProbe, say: Context["say"], warn: Context["warn
   if (result.version) say(`version: ${result.version}`);
   if (result.permissions.length) say(`permissions: ${result.permissions.join(", ")}`);
   const missingJobs = JOB_PERMISSIONS.filter((name) => !result.permissions.includes(name));
-  if (missingJobs.length) say(`missing for jobs: ${missingJobs.map(permissionLabel).join(", ")}`);
+  if (missingJobs.length)
+    say(
+      `missing for jobs: ${missingJobs.map((name) => permissionLabel(name, result.capabilities)).join(", ")}`,
+    );
   if (result.missingPermissions.length) {
-    say(`missing for the app: ${result.missingPermissions.map(permissionLabel).join(", ")}`);
+    say(
+      `missing for the app: ${result.missingPermissions.map((name) => permissionLabel(name, result.capabilities)).join(", ")}`,
+    );
     say("These are not needed for the jobs commands; the Dispatch app uses them.");
   }
   say(`outbound network for jobs: ${result.outboundNetworkAllowed ? "allowed" : "not allowed"}`);

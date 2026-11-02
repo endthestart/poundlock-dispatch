@@ -1,10 +1,13 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { realpath, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { autopilotView, stopRun } from "@core/auto/control";
+import { autopilotView, messageRun, stopRun } from "@core/auto/control";
 import { AutoLedger } from "@core/auto/ledger";
 import { AutoPaths, projectKey, readRunFile } from "@core/auto/runs";
+import { projectFiles } from "@core/paths";
+import { createFolderProject } from "@core/projects";
+import { FileStore } from "@core/store";
 import { afterAll, describe, expect, it } from "vitest";
 import { type AutoCliDeps, parseAutoArgs, runAuto } from "../src/tui/auto";
 import { fakeDocker } from "./support/fake-docker";
@@ -118,6 +121,13 @@ describe("auto command line", () => {
       dir: undefined,
       now: true,
     });
+    expect(parseAutoArgs(["message", "--dir", "/p", "--text", " Use src/lib/server. "])).toEqual({
+      command: "message",
+      run: undefined,
+      dir: "/p",
+      text: "Use src/lib/server.",
+    });
+    expect(() => parseAutoArgs(["message", "auto-1"])).toThrow("--text");
     expect(
       parseAutoArgs([
         "start",
@@ -142,12 +152,26 @@ describe("auto command line", () => {
       allowDependencyDownloads: true,
       limits: { hours: 1.5 },
       wait: true,
+      acceptAlreadyMet: false,
     });
+    expect(
+      parseAutoArgs([
+        "start",
+        "--dir",
+        "/p",
+        "--image",
+        "img",
+        "--checkpoint",
+        "wait",
+        "--accept-already-met",
+      ]),
+    ).toMatchObject({ checkpoint: "wait", acceptAlreadyMet: true });
     for (const [argv, message] of [
       [["start", "--image", "img"], /--dir is required/],
       [["start", "--dir", "/p"], /--image is required/],
       [["start", "--dir", "/p", "--image", "i", "--case-minutes", "1.5"], /positive whole number/],
       [["start", "--dir", "/p", "--image", "i", "--check", " "], /cannot be empty/],
+      [["start", "--dir", "/p", "--image", "i", "--checkpoint", "pause"], /notify or wait/],
       [["list"], /needs --dir/],
       [["status", "a", "b"], /at most one run/],
       [["frobnicate"], /Unknown auto command/],
@@ -180,16 +204,84 @@ describe("auto command line", () => {
       true,
     );
     expect(await env.cli("status", "--dir", env.source)).toBe(0);
-    expect(env.text()).toContain("Cases 1/1 verified, not reviewed");
+    expect(env.text()).toContain("Tasks 1/1 verified, not reviewed");
     expect(await env.cli("list", "--dir", env.source)).toBe(0);
-    expect(env.text()).toContain(`${run.runId}  1/1 verified, not reviewed  every case verified`);
+    expect(env.text()).toContain(`${run.runId}  1/1 verified, not reviewed  every task verified`);
     const out = join(await tempDir("auto-cli-out-"), "run.patch");
     expect(await env.cli("export", run.runId, "--out", out)).toBe(0);
     expect(env.text()).toContain("verified, not reviewed");
     expect(await env.cli("resume", run.runId)).toBe(0);
     expect(env.text()).toContain("nothing to resume");
     expect(await env.cli("watch", run.runId)).toBe(0);
-    expect(env.text()).toContain("Ended: every case verified (not reviewed)");
+    expect(env.text()).toContain("Ended: every task verified (not reviewed)");
+  });
+
+  it("records --accept-already-met on the run it starts", async () => {
+    const env = await setup();
+    const code = await env.cli(
+      "start",
+      "--dir",
+      env.source,
+      "--image",
+      "toolchain:test",
+      "--plan",
+      env.plan,
+      "--profile",
+      "gate-model",
+      "--accept-already-met",
+      "--no-wait",
+    );
+    expect(code, env.output.join("")).toBe(0);
+    expect((await readRunFile(env.spawned.at(-1) ?? "")).acceptAlreadyMet).toBe(true);
+  });
+
+  it("leads status with the run card and its details: standing, spend, branch and task stages", async () => {
+    const env = await setup();
+    const runDir = await env.start();
+    expect(await env.cli("run", runDir)).toBe(0);
+    const store = new FileStore(
+      await tempDir("auto-cli-store-"),
+      await tempDir("auto-cli-config-"),
+    );
+    await store.init();
+    const project = await createFolderProject({ store, folder: env.source });
+    const sessions = projectFiles(store.layout.root, project.id).sessions;
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, "s.jsonl"),
+      `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        message: { role: "assistant", usage: { cost: { total: 1.5 } } },
+      })}\n`,
+    );
+    env.text();
+    const withProject = { ...env.deps, project: async () => ({ project, store }) };
+    expect(await runAuto(["status", "--dir", env.source], withProject)).toBe(0);
+    const [card, details] = env.text().split("\n\n");
+    expect(card).toMatch(/^Built · Ended /);
+    expect(card).toContain("Manager $1.50");
+    expect(card).toContain("Last 7 days $1.50");
+    expect(details).toContain("Tasks 1/1 verified, not reviewed");
+    expect(details).toContain(`The work is on branch ${(await readRunFile(runDir)).branch};`);
+    expect(details).toMatch(/^1\. verified · /m);
+  });
+
+  it("previews a merge, merges only with --yes, and names the report", async () => {
+    const env = await setup();
+    const runDir = await env.start();
+    expect(await env.cli("run", runDir)).toBe(0);
+    const run = await readRunFile(runDir);
+    env.text();
+    expect(await env.cli("merge", "--dir", env.source)).toBe(0);
+    const preview = env.text();
+    expect(preview).toContain("1 commit, 1 file changed");
+    expect(preview).toContain(`dispatch autopilot merge ${run.runId} --yes`);
+    expect(git(env.source, "rev-parse", "HEAD")).toBe(run.baseCommit);
+    expect(await env.cli("merge", "--dir", env.source, "--yes")).toBe(0);
+    expect(env.text()).toContain("Merged 1 verified commit (1 file)");
+    expect(existsSync(join(env.source, "done.txt"))).toBe(true);
+    expect(await env.cli("report", run.runId)).toBe(0);
+    expect(env.text().trim()).toBe(join(runDir, "report.md"));
   });
 
   it("ends a run it cannot work as blocked, releasing the folder", async () => {
@@ -216,9 +308,22 @@ describe("auto command line", () => {
     );
     cleanup.push(() => holder.kill("SIGKILL"));
     await writeFile(join(runDir, "runner.pid"), String(holder.pid));
+    expect(
+      await env.cli(
+        "message",
+        "--dir",
+        env.source,
+        "--text",
+        "Keep the database in src/lib/server.",
+      ),
+    ).toBe(0);
+    expect(env.text()).toContain("The worker on the current case hears it now");
     expect(await env.cli("stop", "--dir", env.source, "--now")).toBe(0);
     expect(env.text()).toContain("stop now");
-    expect(await new AutoLedger(runDir).readInbox()).toMatchObject([{ cmd: "stop_now" }]);
+    expect(await new AutoLedger(runDir).readInbox()).toMatchObject([
+      { cmd: "message", text: "Keep the database in src/lib/server." },
+      { cmd: "stop_now" },
+    ]);
     expect(await env.cli("resume", "--dir", env.source)).toBe(1);
     expect(env.text()).toContain(`already running (pid ${holder.pid})`);
     holder.kill("SIGKILL");
@@ -226,6 +331,9 @@ describe("auto command line", () => {
     expect(await env.cli("stop", "--dir", env.source)).toBe(0);
     expect(env.text()).toContain("The runner was not running. The run is stopped");
     expect((await new AutoLedger(runDir).state()).outcome).toBe("cancelled_after_checkpoint");
+    // A stopped run keeps a message for when it resumes.
+    expect(await env.cli("message", "--dir", env.source, "--text", "for the resume")).toBe(0);
+    expect(env.text()).toContain("the run takes it when it resumes");
     expect(await env.cli("resume", "--dir", env.source)).toBe(0);
     expect(env.spawned.at(-1)).toBe(runDir);
   });
@@ -242,20 +350,31 @@ describe("auto command line", () => {
       cases: [{ id: "C1", stage: "pending" }],
     });
     expect(view?.board).toBeUndefined();
+    // A runner just spawned has not written its pid: the run is worked, as its card says.
+    expect(await messageRun(runDir, "Start with the parser")).toBe("sent");
     // No runner a minute later: interrupted, and Resume is the way on.
     const later = new Date(Date.parse(run.createdAt) + 60_000);
     expect((await autopilotView(env.paths, env.source, later))?.phase).toBe("interrupted");
     expect(
-      await stopRun(env.paths, runDir, "after_case", {
-        docker: env.docker.docker,
-        env: env.docker.env,
-      }),
+      await stopRun(
+        env.paths,
+        runDir,
+        "after_case",
+        { docker: env.docker.docker, env: env.docker.env },
+        later,
+      ),
     ).toBe("stopped");
     expect(await autopilotView(env.paths, env.source, later)).toMatchObject({
       phase: "ended",
       outcome: "cancelled_after_checkpoint",
     });
     expect(await stopRun(env.paths, runDir, "now")).toBe("already_ended");
+    // A stopped run still takes guidance, for when it resumes.
+    expect(await messageRun(runDir, "Plan the unfinished task again", later)).toBe("waiting");
+    expect((await new AutoLedger(runDir).readInbox()).at(-1)).toMatchObject({
+      cmd: "message",
+      text: "Plan the unfinished task again",
+    });
   });
 
   it("leaves a watched run running on Ctrl+C", async () => {

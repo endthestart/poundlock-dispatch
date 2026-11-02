@@ -62,7 +62,7 @@ describe("container isolation", () => {
     // An init reaps what tests leak, so zombies never fill the process limit.
     expect(text).toContain("--init --ulimit core=0 --pids-limit");
     expect(text).toContain("--user 501:20");
-    expect(args.filter((a, i) => args[i - 1] === "-v")).toEqual([
+    expect(args.filter((_, i) => args[i - 1] === "-v")).toEqual([
       "/data/auto/runs/r1/work:/data/auto/runs/r1/work",
       // After the worktree, so the pointer lies over it read-only (H4).
       "/data/auto/runs/r1/work/.git:/data/auto/runs/r1/work/.git:ro",

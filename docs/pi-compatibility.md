@@ -1,6 +1,7 @@
 # Pi compatibility
 
-Poundlock Dispatch embeds `@earendil-works/pi-coding-agent` **0.86.1**. A Pi fork is not required.
+Poundlock Dispatch embeds `@earendil-works/pi-coding-agent` **1.1.0** (`PI_VERSION` in
+`src/shared/types.ts`). A Pi fork is not required.
 
 ## Ownership
 
@@ -50,12 +51,17 @@ without the guard.
 `tests/pi-contract.test.ts` covers:
 
 - the pinned Pi version matches `PI_VERSION`, which job provenance reports
+- none of the CLI's built-in extensions (MCP, codemode) load, whatever settings or
+  the project ask
 - persistent session create/restore
 - built-in tool working-directory behavior
 - `tool_call` blocking before execution
-- terminating structured tools
-- dynamic provider registration
+- terminating structured tools, cancellation and dynamic provider registration
+- built-in tools reach Poundlock without strict schemas (otherwise local models fill
+  every optional argument)
+- prompts marked for caching only on models Anthropic serves
 - app-owned extensions with untrusted project resources
-- built-in tools reach Poundlock without strict schemas (Pi 0.86 enables them by default; local models then fill every optional argument)
 
-Pi 0.86.1 does not flush a new JSONL session to disk until an assistant message exists. The contract suite restores from that flushed file. Restoring a conversation never dispatches work.
+Pi 1.1.0 writes a new JSONL session file with its first message, not when the
+session is created. The contract suite restores from that file. Restoring a
+conversation never dispatches work.

@@ -10,7 +10,9 @@ COPY . .
 RUN npm run lint && npm run typecheck && npm test \
     && { npm audit --json > /tmp/npm-audit.json || true; } \
     && node scripts/npm-audit-gate.cjs /tmp/npm-audit.json security/npm-audit-allow.json \
-    && node scripts/license-inventory.cjs
+    && cp THIRD_PARTY_NOTICES.md /tmp/notices-committed.md \
+    && node scripts/license-inventory.cjs \
+    && node scripts/notices-drift.cjs /tmp/notices-committed.md THIRD_PARTY_NOTICES.md
 RUN npm run package:linux
 RUN xvfb-run -a node scripts/package-smoke.cjs release/linux-unpacked/poundlock-dispatch-gui \
     && node scripts/check-package.cjs release/linux-unpacked

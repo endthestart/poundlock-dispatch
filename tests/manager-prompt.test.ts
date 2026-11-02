@@ -32,6 +32,21 @@ describe("manager conversation contract", () => {
     expect(MANAGER_SYSTEM_PROMPT).toContain("do not restart discovery");
   });
 
+  it("asks every open question the main job turns on, and names its own choices", () => {
+    // Two interviews each asked two questions, then chose the alignment
+    // model, the input format and what to do with a bad frame unasked.
+    expect(MANAGER_SYSTEM_PROMPT).toContain("what it takes in, how its core step works");
+    expect(MANAGER_SYSTEM_PROMPT).toContain("name each such choice you made yourself");
+    expect(MANAGER_SYSTEM_PROMPT).toContain("a discovery list is as long as its questions");
+  });
+
+  it("writes scenarios as outcomes with known answers, one on input like the user's", () => {
+    // A scenario fixed a flat formula that never divided pixel by
+    // pixel, and its end-to-end scenario measured nothing; both passed.
+    expect(MANAGER_SYSTEM_PROMPT).toContain("never the code's formula");
+    expect(MANAGER_SYSTEM_PROMPT).toContain("input like the user's own");
+  });
+
   it("uses a reusable engineering workflow rather than a demonstration template", () => {
     expect(MANAGER_SYSTEM_PROMPT).not.toMatch(/django/i);
     expect(MANAGER_SYSTEM_PROMPT).toContain("Do not follow a framework-specific questionnaire");

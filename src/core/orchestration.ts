@@ -1,3 +1,5 @@
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { ToolJournal } from "@core/tool-journal";
 import { boardChanges, isPlaceholderText } from "@shared/board-changes";
 import {
   CAPABILITY_EVIDENCE_CAVEAT,
@@ -13,9 +15,19 @@ import {
   MAX_COMPACT_INSTRUCTIONS,
 } from "@shared/compaction";
 import { composerSendBlocked } from "@shared/composer-guard";
+import { escalationSettings, nextEscalation, rungOfTask } from "@shared/escalation";
 import { inferenceApprovalText, routeConsequence } from "@shared/inference-approval";
 import { milestoneProblems } from "@shared/milestones";
 import { projectReach } from "@shared/network";
+import { autoApprovalNotice, effectiveToolTrust, type ToolTrustMode } from "@shared/permissions";
+import {
+  fixRoundsPerTask,
+  isTurnBudgetStop,
+  MAX_RECOVERIES_PER_TASK,
+  managerTurnsForPlan,
+  TURN_BUDGET_STOP,
+} from "@shared/policy-limits";
+import { isLiveAttempt, runStopBlocksResume } from "@shared/project-status";
 import { resolveReasoning } from "@shared/reasoning";
 import {
   coverageNote,
@@ -36,51 +48,11 @@ import {
   effectiveDestination,
   interactiveUnavailableReason,
   managerChoice,
+  projectWorkerRoles,
   sameRuntimeSlot,
   savedRoleAuthorizesDestination,
 } from "@shared/roles";
-import { normalizeAccessRoot, readRootsFor, writeRootsFor } from "./access-roots";
-import { lockBlockedMessage } from "./folder-lock.js";
-import {
-  expectsRedTests,
-  freezeAccepted,
-  frozenBriefNote,
-  frozenDrift,
-  frozenNamedIn,
-  frozenRefusal,
-  frozenTestsIn,
-  keepFrozenCopies,
-  restoreFrozenTests,
-} from "./frozen-tests";
-import { compilePlanProposal } from "./plan-compiler";
-import {
-  classifyInfrastructureError,
-  INFRASTRUCTURE_ERROR,
-  shouldDeferInfrastructureRecovery,
-} from "./recovery";
-import { shouldPauseOnDispatchSession } from "./session-pause";
-import { oversizeReason, taskSizeNotes } from "./task-size";
-import {
-  checksPassed,
-  managerReadableRoot,
-  projectWorkingRoot,
-  verificationFailed,
-} from "./workflow-support";
-
-export { canDispatchStatus, createProjectFromFiles } from "./workflow-support";
-
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { ToolJournal } from "@core/tool-journal";
-import { escalationSettings, nextEscalation, rungOfTask } from "@shared/escalation";
-import { autoApprovalNotice, effectiveToolTrust, type ToolTrustMode } from "@shared/permissions";
-import {
-  fixRoundsPerTask,
-  isTurnBudgetStop,
-  MAX_RECOVERIES_PER_TASK,
-  managerTurnsForPlan,
-  TURN_BUDGET_STOP,
-} from "@shared/policy-limits";
-import { isLiveAttempt, runStopBlocksResume } from "@shared/project-status";
+import { fallbackNotice, isSpendingRefusal } from "@shared/spending-limit";
 import { buildStuckTaskBrief } from "@shared/stuck-task";
 import type {
   AttemptRecord,
@@ -102,8 +74,9 @@ import {
   QUESTION_OPTION_PREFIX,
   resolveTaskRoute,
 } from "@shared/types";
+import { normalizeAccessRoot, readRootsFor, writeRootsFor } from "./access-roots";
 import type { ApprovalBroker } from "./approval-broker";
-import { writeJsonAtomic } from "./atomic-write.js";
+import { overwriteDurable, writeJsonAtomic, writeJsonDurable } from "./atomic-write.js";
 import { INTERACTIVE_ATTEMPT_LIMIT_ERROR, isAttemptTimeLimit } from "./attempt-limit.js";
 import {
   escalationPolicyKey,
@@ -117,6 +90,18 @@ import {
   isInterruptAttempt,
 } from "./failure-class.js";
 import { safeReadFile } from "./file-access";
+import { lockBlockedMessage } from "./folder-lock.js";
+import {
+  expectsRedTests,
+  freezeAccepted,
+  frozenBriefNote,
+  frozenDrift,
+  frozenNamedIn,
+  frozenRefusal,
+  frozenTestsIn,
+  keepFrozenCopies,
+  restoreFrozenTests,
+} from "./frozen-tests";
 import { trustedRuntimeDirectories } from "./host-tools.js";
 import { newId, nowIso, sha256Text } from "./ids.js";
 import {
@@ -137,17 +122,24 @@ import {
   survivorsRefusal,
 } from "./mutation-check.js";
 import { projectFiles } from "./paths.js";
+import { compilePlanProposal } from "./plan-compiler";
 import { type PoundlockApi, PoundlockError } from "./poundlock.js";
 import { normalizeProjectBrief, PROJECT_BRIEF_MAX_CHARS } from "./project-brief.js";
 import { environmentRecord, PythonUvAdapter, selectProjectEnvironment } from "./python-uv.js";
+import {
+  classifyInfrastructureError,
+  INFRASTRUCTURE_ERROR,
+  shouldDeferInfrastructureRecovery,
+} from "./recovery";
 import { buildManagerReviewPrompt, checksLine, limitManagerReviewTurn } from "./review-context.js";
 import {
   lastApprovedWorkerRevision,
-  projectWorkerRoles,
+  localFallbackProfile,
   RouteRevisionChangedError,
   resolveInteractiveWorkerProfile,
   resolveVerifierProfile,
 } from "./role-routing.js";
+import { shouldPauseOnDispatchSession } from "./session-pause";
 import { listLiveProjectFiles } from "./snapshot.js";
 import { FileStore } from "./store.js";
 import {
@@ -155,8 +147,10 @@ import {
   changedFilesForReview,
   isDocumentationOnlyChange,
 } from "./task-evidence.js";
+import { oversizeReason, taskSizeNotes } from "./task-size";
 import { wrapUntrusted } from "./untrusted.js";
 import { assertWorkflowCanDispatch, newWorkflowIdentity } from "./workflow-identity.js";
+import { checksPassed, projectWorkingRoot, verificationFailed } from "./workflow-support";
 
 export interface ManagerTurnResult {
   /** Everything the manager said this turn, including text before a tool call. */
@@ -245,7 +239,11 @@ export interface ManagerToolHost {
       capabilities?: string[];
     }>
   >;
-  proposePlan(input: ProposePlanInput, signal?: AbortSignal): Promise<string>;
+  /** Records the plan; `revise` when the Verifier's review asks for changes the manager can make now. */
+  proposePlan(
+    input: ProposePlanInput,
+    signal?: AbortSignal,
+  ): Promise<{ text: string; revise: boolean }>;
   askUser(question: string, options?: QuestionOption[]): Promise<string>;
   /** Ask the owner to let this project use a folder outside it. Ends the turn. */
   requestFolderAccess(input: {
@@ -307,6 +305,8 @@ export interface ProposePlanInput {
   milestones?: import("@shared/types").Milestone[];
   architecture?: string;
   scopeOut?: string[];
+  /** Suggested checks; absent keeps the previous plan's. */
+  checks?: string[];
   /** Titles of published tasks a board update removes; every other task is kept. */
   removeTasks?: string[];
   allowDependencyDownloads?: boolean;
@@ -390,6 +390,12 @@ export interface OrchestratorDeps {
   clock?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   notify?: () => void | Promise<void>;
+  /**
+   * A worker returned a result to review. The host can start the review now
+   * instead of on its next poll; a worker that never got the model's slot is
+   * not one, so its retry keeps the poll's pace.
+   */
+  onReviewReady?: (projectId: string) => void;
   onActivity?: (text: string, projectId?: string) => void;
   /** The manager's in-flight reply. `undefined` drops it. See `AppStateView.managerDraft`. */
   onManagerDraft?: (text: string | undefined, projectId: string) => void;
@@ -452,6 +458,11 @@ export class ProjectOrchestrator {
   private infrastructureRetries = new Map<string, { after: number; startedAt: number }>();
   private respondingToInput = new Set<string>();
   private managerHandoffs = new Map<string, string>();
+  /**
+   * Projects whose investigations moved to the local fallback after a spending
+   * refusal, as "project:role": later ones start there (until Dispatch restarts).
+   */
+  private investigationFallbacks = new Set<string>();
   private stopIntents = new Map<string, "paused" | "cancelled">();
   /** Owner messages seen at each project's last plan review: one review per owner message. */
   private planReviewedAt = new Map<string, number>();
@@ -588,16 +599,10 @@ export class ProjectOrchestrator {
     // Asking about escalation in their own words lifts the owner's earlier no.
     if (/escalat/i.test(trimmed)) project.declinedEscalations = undefined;
     // Replying about a stuck task is an explicit user decision: it resets
-    // that task's loop counters (attempt history stays as evidence), and
-    // rescues a project left in the pre-Phase-1 dead end (a task failed with
-    // a recorded budget-exhausted stop). See also retryTask.
-    const legacyStopReason =
-      project.budget.stopReason &&
-      /repair budget exhausted|recovery budget exhausted/i.test(project.budget.stopReason);
+    // that task's loop counters (attempt history stays as evidence). See also
+    // retryTask.
     const tasksBeforeTurn = await this.deps.store.getTasks(projectId);
-    const stuckTasks = tasksBeforeTurn.filter(
-      (task) => task.stuck || (legacyStopReason && task.status === "failed"),
-    );
+    const stuckTasks = tasksBeforeTurn.filter((task) => task.stuck);
     if (stuckTasks.length) {
       for (const task of stuckTasks) {
         task.repairCount = 0;
@@ -606,7 +611,6 @@ export class ProjectOrchestrator {
         task.freshWorkerSession = true;
       }
       await this.deps.store.saveTasks(projectId, tasksBeforeTurn);
-      if (legacyStopReason) project.budget.stopReason = undefined;
     }
     if (
       project.needsInput &&
@@ -675,13 +679,11 @@ export class ProjectOrchestrator {
         latest.pause = undefined;
       }
       await this.save(latest);
-      if (latest.status === "running") {
-        this.respondingToInput.delete(projectId);
-        await this.tick(projectId);
-        return;
-      }
     }
     this.respondingToInput.delete(projectId);
+    // Work the turn started or resumed (a delegated task, an answer that lets
+    // a run go on, a review it left) begins now rather than on the next poll.
+    if (latest.status === "running" || latest.status === "reviewing") await this.tick(projectId);
   }
 
   async clearCurrentRun(projectId: string): Promise<void> {
@@ -743,17 +745,6 @@ export class ProjectOrchestrator {
     } finally {
       this.turning.delete(projectId);
     }
-  }
-
-  async acceptReviewed(projectId: string): Promise<void> {
-    const tasks = await this.deps.store.getTasks(projectId);
-    const reviewable = tasks.filter((task) => task.status === "needs_review");
-    if (!reviewable.length) throw new Error("There is no manager-reviewed result to accept yet.");
-    for (const task of reviewable) await this.requestApply(projectId, task.id);
-    await this.appendSystem(
-      projectId,
-      "You accepted the current manager-reviewed results. Project files were not reset.",
-    );
   }
 
   async reopen(projectId: string): Promise<void> {
@@ -964,9 +955,6 @@ export class ProjectOrchestrator {
   /**
    * An explicit user decision on a stuck or exhausted task: give it a fresh
    * allowance on the same worker/model, keeping attempt history as evidence.
-   * Also rescues a project stuck in the pre-Phase-1 dead end (task failed
-   * with a recorded "Repair budget exhausted"/"Recovery budget exhausted"
-   * stop, run paused): that stop is cleared the same way.
    */
   async retryTask(projectId: string, taskId: string): Promise<void> {
     const project = await this.requireProject(projectId);
@@ -1151,7 +1139,7 @@ export class ProjectOrchestrator {
         const excluded =
           project.source.kind === "local_folder" ? project.source.excludedPatterns : [];
         const listed = await listLiveProjectFiles(
-          managerReadableRoot(this.deps.store.layout.root, project),
+          projectWorkingRoot(this.deps.store.layout.root, project),
           excluded,
         );
         // Granted folders are listed under their own path, so the manager can
@@ -1164,7 +1152,7 @@ export class ProjectOrchestrator {
       },
       readFile: async (path) => {
         const project = await this.requireProject(projectId);
-        const root = managerReadableRoot(this.deps.store.layout.root, project);
+        const root = projectWorkingRoot(this.deps.store.layout.root, project);
         return wrapUntrusted(
           `file ${path}`,
           await safeReadFile(
@@ -1213,8 +1201,11 @@ export class ProjectOrchestrator {
           capabilities: capabilitySentences(model),
         }));
       },
-      proposePlan: async (input, signal) =>
-        `${await this.proposePlan(projectId, input)}${taskSizeNotes(input.tasks)}${await this.ledgerCoverageNote(projectId)}${await this.reviewPlan(projectId, input, signal)}`,
+      proposePlan: async (input, signal) => {
+        const recorded = `${await this.proposePlan(projectId, input)}${taskSizeNotes(input.tasks)}${await this.ledgerCoverageNote(projectId)}`;
+        const review = await this.reviewPlan(projectId, input, signal);
+        return { text: `${recorded}${review.text}`, revise: review.revise };
+      },
       investigate: async (input, signal) => this.investigate(projectId, input, signal),
       requestEscalation: async (input) => this.requestEscalation(projectId, input),
       delegateTask: async (task) => {
@@ -1428,35 +1419,48 @@ export class ProjectOrchestrator {
     this.assertManagerActionAllowed(projectId);
     const project = await this.requireProject(projectId);
     const previousPlan = await this.deps.store.getPlan(projectId);
-    const ledger = mergeRequirements(previousPlan?.requirements, input.requirements);
+    // A revision of an update still awaiting approval builds on that update's
+    // ledger and milestones: a manager was told "The ledger has no R8" for the
+    // R8 its own pending update had added.
+    const proposed = (await this.deps.store.getPendingBoard(projectId))?.plan ?? previousPlan;
+    const ledger = mergeRequirements(proposed?.requirements, input.requirements);
     if (!action && !ledger.length && input.tasks.length >= LEDGER_REQUIRED_TASKS)
       throw new Error(
         "List the owner's requirements first, in requirements: an id (R1, R2, …), what the owner needs in their words, and one or two scenarios a user could carry out to show it works. Then have each task cite the IDs it serves in requirementIds.",
       );
+    // Every problem at once: told one kind at a time, a manager fixed one
+    // and broke another, and lost the turn.
+    const problems: string[] = [];
+    const known = new Set(ledger.map((item) => item.id.trim().toUpperCase()));
+    const unknown = [
+      ...new Set(
+        input.tasks
+          .flatMap((task) => task.requirementIds ?? [])
+          .filter((id) => !known.has(id.trim().toUpperCase())),
+      ),
+    ];
+    // A manager's one-task plan cited R1–R9 with no ledger at all.
+    if (!action && !ledger.length && unknown.length)
+      problems.push(
+        `The tasks cite ${unknown.join(", ")}, but the plan lists no requirements. List them in requirements: an id, the owner's words, and one or two scenarios a user carries out to show it works.`,
+      );
     if (!action && ledger.length) {
-      const known = new Set(ledger.map((item) => item.id.trim().toUpperCase()));
       const uncited = input.tasks.filter(
         (task) =>
           !task.requirementIds?.length &&
           (!task.taskKind || task.taskKind === "closed_implementation") &&
           !isDocumentationOnlyChange(task.filesToTouch ?? []),
       );
-      const unknown = [
-        ...new Set(
-          input.tasks
-            .flatMap((task) => task.requirementIds ?? [])
-            .filter((id) => !known.has(id.trim().toUpperCase())),
-        ),
-      ];
       // A local manager left twelve of thirteen tasks uncited after a note
-      // asked it to cite them, so its ledger could never be covered (13 Oct).
+      // asked it to cite them, so its ledger could never be covered. Two
+      // managers left a workspace-setup task uncited: nothing said what setup cites.
       if (uncited.length || unknown.length)
-        throw new Error(
+        problems.push(
           [
             uncited.length &&
               `Each task must cite the requirement IDs it delivers in requirementIds; ${uncited.map((task) => `“${task.title}”`).join(", ")} cite none.`,
             unknown.length && `The ledger has no ${unknown.join(", ")}.`,
-            `The ledger's IDs: ${[...known].join(", ")}. A documentation-only task may cite none.`,
+            `The ledger's IDs: ${[...known].join(", ")}. Setup work cites the requirements it unblocks, so a project skeleton cites them all, and every requirement still needs a task that builds it; only a documentation-only task may cite none.`,
           ]
             .filter(Boolean)
             .join(" "),
@@ -1469,13 +1473,13 @@ export class ProjectOrchestrator {
           id: item.id.trim().toUpperCase(),
           requirementIds: item.requirementIds.map((id) => id.trim().toUpperCase()),
         }))
-      : previousPlan?.milestones;
-    if (!action && milestones?.length) {
-      const problems = milestoneProblems(milestones, ledger, input.tasks);
-      if (problems.length) throw new Error(problems.join(" "));
-    }
+      : proposed?.milestones;
+    if (!action && milestones?.length)
+      problems.push(...milestoneProblems(milestones, ledger, input.tasks));
+    if (problems.length) throw new Error(problems.join(" "));
     const architecture = input.architecture ?? previousPlan?.architecture;
     const scopeOut = input.scopeOut ?? previousPlan?.scopeOut;
+    const checks = input.checks ?? previousPlan?.suggestedChecks;
     // A task cannot change a frozen test unless it says so; catch it while
     // planning rather than when its worker is refused (13 Oct).
     const frozenPaths = new Set(frozenTestsIn(previousPlan?.frozenTests).map((test) => test.path));
@@ -1491,7 +1495,7 @@ export class ProjectOrchestrator {
         `${touchesFrozen.join("; ")}, a frozen test its worker cannot change. Put new tests in a new file, or mark the task changesFrozenTests if the test itself must change (the owner sees it on the plan card).`,
       );
     const compiled = compilePlanProposal(
-      { ...input, requirements: ledger, milestones, architecture, scopeOut },
+      { ...input, requirements: ledger, milestones, architecture, scopeOut, checks },
       project,
       await this.deps.store.getPermissions(),
     );
@@ -1558,11 +1562,15 @@ export class ProjectOrchestrator {
       throw new Error(
         `“${vague.title}” has no real objective or acceptance criteria. State it in full; a published task you leave out of an update keeps its own.`,
       );
+    // A board never approved, none of whose tasks ran, is still a draft.
+    const draft = !previousPlan?.approved && oldTasks.every((task) => task.attempts.length === 0);
     if (write === "amend") {
       // During a run an update adds or changes tasks and keeps the rest; a
       // manager removes a task only by naming it. Local managers asked to
       // restate a fifteen-task board proposed just the two tasks they changed.
-      const board = amendedBoard(oldTasks, tasks, input.removeTasks ?? []);
+      // A draft's revision is the whole board, or its superseded tasks would
+      // stay on it.
+      const board = draft ? tasks : amendedBoard(oldTasks, tasks, input.removeTasks ?? []);
       const changes = boardChanges(
         oldTasks,
         mergeSectionItems(oldTasks, board, taskIdentity, retainTaskIdentity),
@@ -1600,6 +1608,17 @@ export class ProjectOrchestrator {
       return `Proposed board update revision ${plan.revision}: ${tasks.length} task(s) added or changed, ${board.length} on the board after approval. The published task list stays until you approve this change.${droppedNote}${keptNote}`;
     }
     if (write === "merge") {
+      // An agreed extra task joins an approved board. Merged into a spec the owner had
+      // not approved, it dropped the revision they had not seen, and outside Ask mode
+      // it would start the draft without Build it.
+      if (await this.deps.store.getPendingBoard(projectId))
+        throw new Error(
+          "A revised board awaits the owner's decision. Add this task to it with propose_plan, restating the whole board, or that revision is lost.",
+        );
+      if (draft && previousPlan?.requirements?.length)
+        throw new Error(
+          "The owner has not approved this plan yet. Add this task to it with propose_plan, so they see it before Build it.",
+        );
       // Read again just before writing: while work runs, the running task's
       // own record changes, and this proposal's earlier copy must not undo it.
       const latest = joinsRunningBoard ? await this.deps.store.getTasks(projectId) : oldTasks;
@@ -1780,21 +1799,6 @@ export class ProjectOrchestrator {
       task.status = "needs_review";
       task.freshWorkerSession = true;
       restored = true;
-    }
-    if (
-      restored &&
-      project.budget.stopReason &&
-      /Repair budget exhausted|Recovery budget exhausted/i.test(project.budget.stopReason)
-    ) {
-      const stillFailed = tasks.some((task) => {
-        const lastAttempt = task.attempts.at(-1);
-        return task.status === "failed" && (!lastAttempt || !isInterruptAttempt(lastAttempt));
-      });
-      if (!stillFailed) {
-        project.budget.stopReason = undefined;
-        if (project.status === "failed" || project.status === "needs_input")
-          this.markPaused(project, "awaiting_resume", "Interrupted work was restored for review.");
-      }
     }
     if (restored) {
       await this.deps.store.saveTasks(projectId, tasks);
@@ -2471,24 +2475,29 @@ export class ProjectOrchestrator {
    * against the owner's words catches that while it is cheap to fix. Only
    * with a Verifier bound: the worker is no stronger than the manager, so its
    * review would cost minutes and add little. A plan that auto-continued is
-   * already running and is not reviewed.
+   * already running and is not reviewed. A review that asks for changes keeps
+   * the manager's turn open for one revision: ending it there left a review's
+   * six changes unread.
    */
   private async reviewPlan(
     projectId: string,
     input: ProposePlanInput,
     signal?: AbortSignal,
-  ): Promise<string> {
-    if (input.tasks.length < LEDGER_REQUIRED_TASKS) return "";
-    if (!(await this.deps.store.getConnection()).roles.verifier?.profileId) return "";
-    if ((await this.requireProject(projectId)).status !== "awaiting_approval") return "";
+  ): Promise<{ text: string; revise: boolean }> {
+    const none = { text: "", revise: false };
+    if (!(await this.deps.store.getConnection()).roles.verifier?.profileId) return none;
+    if ((await this.requireProject(projectId)).status !== "awaiting_approval") return none;
     const pending = await this.deps.store.getPendingBoard(projectId);
     const plan = pending?.plan ?? (await this.deps.store.getPlan(projectId));
     const tasks = pending?.tasks ?? (await this.deps.store.getTasks(projectId));
+    // A manager planned eight requirements as one stub task; the ledger's size counts too.
+    const small = (count: number) => count < LEDGER_REQUIRED_TASKS;
+    if (small(input.tasks.length) && small(plan?.requirements?.length ?? 0)) return none;
     const said = (await this.deps.store.getMessages(projectId)).filter(
       (message) => message.role === "user",
     );
     // The manager's revision after a review goes to the owner as it is.
-    if (this.planReviewedAt.get(projectId) === said.length) return "";
+    if (this.planReviewedAt.get(projectId) === said.length) return none;
     this.planReviewedAt.set(projectId, said.length);
     const owner = said.map((message) => message.text.trim()).join("\n\n");
     const words =
@@ -2503,10 +2512,12 @@ export class ProjectOrchestrator {
           `- ${item.id} [${item.status}]: ${item.text}${item.scenarios.length ? ` (scenarios: ${item.scenarios.join("; ")})` : ""}`,
       )
       .join("\n");
+    // Dependencies by task number: run 14's and 16's reviews read the ids as broken references.
+    const numbers = new Map(tasks.map((task, index) => [task.id, `${index + 1}`]));
     const board = tasks
       .map(
         (task, index) =>
-          `${index + 1}. ${task.title} [${task.status}]${task.requirementIds?.length ? ` serves ${task.requirementIds.join(", ")}` : ""}${task.dependsOn.length ? `; after ${task.dependsOn.join(", ")}` : ""}\n   Objective: ${clip(task.objective, 400)}\n   Accepted when: ${clip(task.acceptanceCriteria, 500)}${task.filesToTouch?.length ? `\n   Files: ${task.filesToTouch.join(", ")}` : ""}`,
+          `${index + 1}. ${task.title} [${task.status}]${task.requirementIds?.length ? ` serves ${task.requirementIds.join(", ")}` : ""}${task.dependsOn.length ? `; after ${task.dependsOn.map((id) => numbers.get(id) ?? id).join(", ")}` : ""}\n   Objective: ${clip(task.objective, 400)}\n   Accepted when: ${clip(task.acceptanceCriteria, 500)}${task.filesToTouch?.length ? `\n   Files: ${task.filesToTouch.join(", ")}` : ""}`,
       )
       .join("\n");
     const report = await this.investigate(
@@ -2514,15 +2525,19 @@ export class ProjectOrchestrator {
       {
         role: "verifier",
         title: "Review the proposed plan",
-        question: `Review this plan before the owner approves it.\n\nThe owner's words:\n${words}\n\nRequirement ledger:\n${ledger || "(none)"}\n\nTasks:\n${board}`,
+        question: `Review this plan before the owner approves it.\n\nThe owner's words:\n${words}\n\nRequirement ledger:\n${ledger || "(none)"}${plan?.architecture ? `\n\nArchitecture:\n${clip(plan.architecture, 2000)}` : ""}\n\nTasks:\n${board}`,
         instructions:
-          "Read the project as needed and judge the plan, not the code. Check: the ledger holds everything the owner asked for (quote any missing request); each requirement's scenarios are things a user does and sees; each task's acceptance criteria describe behaviour a test can show, not only files, builds or passing checks; tasks that change a user interface can be tested without a person (controller-level tests, off-screen snapshots); the order and dependencies work, with a thin path a user can walk end to end early rather than a deep core and the app last; no task is too big for one worker; and the plan builds on what the project already has instead of redoing it. Be brief. End with `Verdict: sound` or `Verdict: revise`, followed by at most six numbered changes.",
+          "Read the project as needed and judge the plan, not the code. Check: the ledger holds everything the owner asked for (quote any missing request); each requirement's scenarios are things a user does and sees, measured against a known answer rather than the code's formula (check any formula or number in a scenario against what the owner asked for: a wrong one gets built and tested as written); the product's main job has a scenario that runs the whole product on input like the user's own and measures the result; the plan settles nothing the owner's words and answers leave open about what the product takes in, how its core step works or what it does with input it cannot use (name each such choice, so the manager can ask the owner); each task's acceptance criteria describe behaviour a test can show, not only files, builds or passing checks; tasks that change a user interface can be tested without a person (controller-level tests, off-screen snapshots); the order and dependencies work, with a thin path a user can walk end to end early rather than a deep core and the app last; no task is too big for one worker; and the plan builds on what the project already has instead of redoing it. Be brief. End with `Verdict: sound` or `Verdict: revise`, followed by at most six numbered changes.",
       },
       signal,
     );
-    const verdict = /verdict:\s*(sound|revise)[\s\S]*$/i.exec(report)?.[0];
-    if (verdict) await this.appendSystem(projectId, `Plan review: ${clip(verdict, 2000)}`);
-    return `\n\nPlan review by the Verifier (read-only):\n${report}\n\nIf it asks for changes you agree with, propose the plan again with them. If you disagree, say why in your message to the owner.`;
+    // Bold is allowed: run 12's "Verdict: **revise**" never reached the owner.
+    const verdict = /verdict:\s*\**\s*(sound|revise)[\s\S]*$/i.exec(report);
+    if (verdict) await this.appendSystem(projectId, `Plan review: ${clip(verdict[0], 2000)}`);
+    return {
+      text: `\n\nPlan review by the Verifier (read-only):\n${report}\n\nIf it asks for changes you agree with, propose the plan again with them. If you disagree, say why in your message to the owner.`,
+      revise: verdict?.[1].toLowerCase() === "revise",
+    };
   }
 
   /** Gaps between the ledger and the board the owner is about to approve. */
@@ -2602,10 +2617,11 @@ export class ProjectOrchestrator {
             `Mutation check on “${task.title}”: ${mutant.path}:${mutant.line} ${mutant.change}`,
             projectId,
           );
-          // Journalled first: if Dispatch quits mid-check, `restorePendingMutation`
-          // puts the line back on the next start.
+          // Journalled first, and on the drive before the mutant is: if Dispatch
+          // quits or the power goes mid-check, `restorePendingMutation` puts the
+          // line back on the next start.
           await mkdir(`${files.dir}/mutation`, { recursive: true, mode: 0o700 });
-          await writeFile(pending, JSON.stringify({ path, original }), { mode: 0o600 });
+          await writeJsonDurable(pending, { path, original });
           await writeFile(path, broken);
           try {
             const verification = await this.deps.worker.verify({
@@ -2621,6 +2637,7 @@ export class ProjectOrchestrator {
                 await this.deps.store.getPermissions(),
               ),
               allowDependencyDownloads: false,
+              stopOnFailure: true,
               signal: new AbortController().signal,
               approvals: this.deps.approvals!,
               getPolicy: async () => ({
@@ -2633,7 +2650,7 @@ export class ProjectOrchestrator {
             });
             tried.push({ ...mutant, caught: verification.status !== "passed" });
           } finally {
-            await writeFile(path, original);
+            await overwriteDurable(path, original);
             await rm(pending, { force: true });
           }
         }
@@ -2663,7 +2680,7 @@ export class ProjectOrchestrator {
     const saved = await readFile(pending, "utf8").catch(() => undefined);
     if (!saved) return;
     const { path, original } = JSON.parse(saved) as { path: string; original: string };
-    await writeFile(path, original);
+    await overwriteDurable(path, original);
     await rm(pending, { force: true });
     await this.appendSystem(
       projectId,
@@ -2713,7 +2730,7 @@ export class ProjectOrchestrator {
         verification = await this.deps.worker.verify({
           project,
           task,
-          cwd: managerReadableRoot(this.deps.store.layout.root, project),
+          cwd: projectWorkingRoot(this.deps.store.layout.root, project),
           model: { id: task.profileName ?? "verification-only" },
           controllerUrl: connection.url,
           token: connection.token,
@@ -2781,6 +2798,24 @@ export class ProjectOrchestrator {
     // `folderRuns` fences this process; the lock fences the machine. Another
     // Dispatch client may be driving the same folder from its own data
     // directory, where an in-process Set cannot see it.
+    // A holder that died leaves its claim to expire. Once it has, the client
+    // watching takes the folder over, rather than waiting to be reopened: a
+    // terminal opened 15 s after another crashed sat watching nobody (28 Oct).
+    if (
+      this.deps.folderLock &&
+      !this.deps.folderLock.holds(workingRoot) &&
+      !(await this.deps.folderLock.heldBy(workingRoot))
+    ) {
+      const claimed = await this.deps.folderLock.acquireAll([workingRoot], {
+        projectId,
+        workflowId: project.workflowId,
+      });
+      if (claimed.ok && this.lockBlocked.delete(projectId))
+        await this.appendSystem(
+          projectId,
+          `The client that held ${workingRoot} is gone, so this one drives the work now.`,
+        );
+    }
     if (this.deps.folderLock && !this.deps.folderLock.holds(workingRoot)) {
       // Silence here reads exactly like a hung project: the poll keeps
       // ticking, the status keeps saying "working", and nothing dispatches.
@@ -3229,6 +3264,8 @@ export class ProjectOrchestrator {
           projectId,
           `${message} Approve the current route in Settings → Models and routing, then send your message again.`,
         );
+      } else if (await this.fallBackManager(projectId, prompt, message)) {
+        // The hand-off below asks the same turn of the local fallback.
       } else {
         let freshManagerSession = false;
         if (!["completed", "cancelled"].includes(latest.status)) {
@@ -3277,6 +3314,47 @@ export class ProjectOrchestrator {
       )
         await this.managerTurn(projectId, handoff);
     }
+  }
+
+  /**
+   * A cloud manager its provider refused for a spending limit: the project
+   * moves, once, to the owner's local fallback in a fresh session built from
+   * the saved conversation, the owner is told, and the turn is asked again.
+   */
+  private async fallBackManager(
+    projectId: string,
+    prompt: string,
+    message: string,
+  ): Promise<boolean> {
+    if (!isSpendingRefusal(message)) return false;
+    const connection = await this.deps.store.getConnection();
+    const fallback = connection.roles.fallback;
+    const project = await this.requireProject(projectId);
+    if (
+      !fallback ||
+      project.managerEscalation ||
+      project.managerFallback ||
+      managerChoice(project, connection.roles).id === fallback.profileId ||
+      ["completed", "cancelled"].includes(project.status)
+    )
+      return false;
+    const from = managerChoice(project, connection.roles).fallbackName;
+    project.managerFallback = {
+      profileId: fallback.profileId,
+      profileName: fallback.profileName,
+      from,
+      at: nowIso(this.clock),
+    };
+    project.managerSessionId = newId("mgr");
+    project.freshConversation = true;
+    project.budget.managerTurnsUsed = Math.max(0, project.budget.managerTurnsUsed - 1);
+    await this.save(project);
+    await this.appendSystem(
+      projectId,
+      `${fallbackNotice({ role: "manager", from, to: fallback.profileName, reason: message })} To go back, choose the manager again in Project settings.`,
+    );
+    this.managerHandoffs.set(projectId, prompt);
+    return true;
   }
 
   private async managerInfrastructureFailure(
@@ -3386,11 +3464,15 @@ export class ProjectOrchestrator {
     };
     let model: import("@shared/types").InteractiveModel;
     let reasoning: import("@shared/types").ReasoningChoice;
+    const fallbackKey = `${projectId}:${input.role ?? "worker"}`;
+    let fallback: import("@shared/types").InteractiveModel | undefined;
     try {
       const models = await (await this.deps.clientFor()).listInteractiveModels();
+      fallback = localFallbackProfile(models, connection.roles);
       const verifier =
         input.role === "verifier" ? resolveVerifierProfile(models, connection.roles) : undefined;
       model =
+        (this.investigationFallbacks.has(fallbackKey) ? fallback : undefined) ??
         verifier ??
         resolveInteractiveWorkerProfile(models, connection.roles, project, task, connection);
       const bound = verifier
@@ -3433,31 +3515,56 @@ export class ProjectOrchestrator {
       const capabilities = await (await this.deps.clientFor())
         .capabilities?.()
         .catch(() => undefined);
-      const result = await this.deps.worker.run({
-        project,
-        task,
-        cwd,
-        model,
-        reasoning,
-        controllerUrl: connection.url,
-        token: connection.token,
-        dataDir,
-        trust: effectiveToolTrust(project.policy.toolTrust, await this.deps.store.getPermissions()),
-        readOnly: true,
-        allowDependencyDownloads: false,
-        signal: controller.signal,
-        approvals: this.deps.approvals,
-        getPolicy: async () => ({
-          project: await this.requireProject(projectId),
-          permissions: await this.deps.store.getPermissions(),
-        }),
-        reviewAction: this.deps.reviewAction,
-        sessionDir: `${dataDir}/sessions`,
-        privateHome: `${files.dir}/worker-home`,
-        lastApprovedRoutingRevision: lastApprovedWorkerRevision(task, model, connection.roles),
-        capabilities,
-        onActivity: (text) => this.deps.onActivity?.(text, projectId),
-      });
+      const approvals = this.deps.approvals;
+      const run = async (on: import("@shared/types").InteractiveModel) =>
+        this.deps.worker.run({
+          project,
+          task,
+          cwd,
+          model: on,
+          reasoning,
+          controllerUrl: connection.url,
+          token: connection.token,
+          dataDir,
+          trust: effectiveToolTrust(
+            project.policy.toolTrust,
+            await this.deps.store.getPermissions(),
+          ),
+          readOnly: true,
+          allowDependencyDownloads: false,
+          signal: controller.signal,
+          approvals,
+          getPolicy: async () => ({
+            project: await this.requireProject(projectId),
+            permissions: await this.deps.store.getPermissions(),
+          }),
+          reviewAction: this.deps.reviewAction,
+          sessionDir: `${dataDir}/sessions`,
+          privateHome: `${files.dir}/worker-home`,
+          lastApprovedRoutingRevision:
+            on === fallback
+              ? on.routingRevision
+              : lastApprovedWorkerRevision(task, on, connection.roles),
+          capabilities,
+          onActivity: (text) => this.deps.onActivity?.(text, projectId),
+        });
+      let result = await run(model);
+      // A spending refusal does not pass with waiting: asked again, once, of the
+      // owner's local fallback, which this project's later investigations keep.
+      if (result.error && fallback && model !== fallback && isSpendingRefusal(result.error)) {
+        await this.appendSystem(
+          projectId,
+          fallbackNotice({
+            role: input.role ?? "worker",
+            from: model.name ?? model.id,
+            to: fallback.name ?? fallback.id,
+            reason: result.error,
+          }),
+        );
+        this.investigationFallbacks.add(fallbackKey);
+        model = fallback;
+        result = await run(model);
+      }
       const changed = result.changedFiles.length
         ? `\nWarning: files changed while it ran, which a read-only worker cannot do; something else is editing this folder: ${result.changedFiles.join(", ")}.`
         : "";
@@ -3760,6 +3867,7 @@ export class ProjectOrchestrator {
         this.localRuns.delete(project.id);
         this.deps.onActivity?.("", project.id);
         await this.deps.notify?.();
+        if (state.status === "reviewing") this.deps.onReviewReady?.(project.id);
       }
     })();
     this.localRuns.set(project.id, { controller, done });

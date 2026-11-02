@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { EXPECTED_API_MAJOR, EXPECTED_CONTRACT_REVISION } from "@core/capabilities";
 import {
   createAgentSession,
   createLsTool,
@@ -499,7 +500,10 @@ describe("live Poundlock contract probe", () => {
   const url = process.env.POUNDLOCK_URL;
   const token = process.env.POUNDLOCK_TOKEN;
   const run = url && token ? it : it.skip;
-  run("records API major 1 and contract revision 3 from the deployed controller", async () => {
+  run("meets compat/poundlock.json's API major, minimum revision and features", async () => {
+    const compatibility = JSON.parse(await readFile(join("compat", "poundlock.json"), "utf8")) as {
+      required_features: string[];
+    };
     const response = await fetch(`${url!.replace(/\/$/, "")}/api/v1/capabilities`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -508,19 +512,9 @@ describe("live Poundlock contract probe", () => {
       contract_revision?: number;
       features?: string[];
     };
-    expect(body.api_major).toBe(1);
-    expect(body.contract_revision).toBe(3);
-    for (const feature of [
-      "access_preflight",
-      "availability_reasons",
-      "data_destination",
-      "durable_jobs",
-      "external_invoke_permission",
-      "managed_application_identities",
-      "routing_revision",
-      "usage_summary",
-      "verifier_toolchain",
-    ]) {
+    expect(body.api_major).toBe(EXPECTED_API_MAJOR);
+    expect(body.contract_revision).toBeGreaterThanOrEqual(EXPECTED_CONTRACT_REVISION);
+    for (const feature of compatibility.required_features) {
       expect(body.features).toContain(feature);
     }
   });

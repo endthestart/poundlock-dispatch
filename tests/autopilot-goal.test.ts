@@ -39,6 +39,8 @@ const lastUser = (request: ChatRequest) =>
 const firstUser = (request: ChatRequest) =>
   messageText(request.messages.find((m) => m.role === "user") ?? {});
 
+const STARS_ACCEPTANCE = { path: "stars_acceptance_test.txt", content: "stars stick\n" };
+
 /** The Planner answers through submit; a worker writes one file and finishes. */
 function script(request: ChatRequest): ScriptedTurn {
   const calls = callsSinceLastUser(request);
@@ -58,6 +60,7 @@ function script(request: ChatRequest): ScriptedTurn {
               objective: "Rate photos",
               acceptanceCriteria: "A test rates a photo and sees its stars",
               requirementIds: ["R2"],
+              acceptanceTests: [STARS_ACCEPTANCE],
             },
           ],
           verdicts: [],
@@ -188,6 +191,12 @@ it("works a goal milestone by milestone until every one is verified", async () =
     ["Stars", "M2"],
   ]);
   expect(tasks[1].workerPrompt).toContain("Owner requirements this task serves:\n- R2: Rate");
+  // The gating Planner's acceptance test went in with its task and was frozen once accepted.
+  expect(tasks[1].acceptanceTests).toEqual([STARS_ACCEPTANCE]);
+  const entries = await new AutoLedger(runDir).read();
+  expect(entries.flatMap(({ event }) => (event.type === "frozen" ? event.paths : []))).toEqual([
+    STARS_ACCEPTANCE.path,
+  ]);
   const ledger = (await store.getPlan(project.id))?.requirements;
   expect(ledger?.map((item) => [item.id, item.verdict?.result])).toEqual([
     ["R1", "shown"],
@@ -199,7 +208,7 @@ it("works a goal milestone by milestone until every one is verified", async () =
   ]);
   expect((await readRunFile(runDir)).limits.maxCases).toBe(400);
   const report = await readFile(join(runDir, "report.md"), "utf8");
-  expect(report).toContain(`# Autopilot run ${run.runId}: every case verified (not reviewed)`);
+  expect(report).toContain(`# Autopilot run ${run.runId}: every task verified (not reviewed)`);
   expect(report).toContain("- **R2** Rate — shown: test for R2");
   expect(report).toContain("- **M2 Rate**: verified");
   expect(report).toContain("None of this work was reviewed by a person.");

@@ -1,3 +1,4 @@
+import { rememberPermissionLabels } from "@shared/types";
 import { PoundlockError } from "./poundlock.js";
 
 /** The Poundlock release this Dispatch was tested with (compat/poundlock.json). */
@@ -24,6 +25,8 @@ export interface PoundlockCapabilities {
   api_major: number;
   contract_revision: number;
   features: PoundlockCapabilityFeature[];
+  token_permissions?: { code: string; label: string }[];
+  caller_permissions?: string[];
   [key: string]: unknown;
 }
 
@@ -43,7 +46,24 @@ export function parseCapabilities(value: unknown): PoundlockCapabilities {
   const features = Array.isArray(record.features)
     ? record.features.filter((item): item is string => typeof item === "string")
     : [];
-  return { ...record, api_major: apiMajor, contract_revision: contractRevision, features };
+  const tokenPermissions = Array.isArray(record.token_permissions)
+    ? record.token_permissions.filter(
+        (item): item is { code: string; label: string } =>
+          typeof item?.code === "string" && typeof item?.label === "string",
+      )
+    : undefined;
+  rememberPermissionLabels(tokenPermissions);
+  const callerPermissions = Array.isArray(record.caller_permissions)
+    ? record.caller_permissions.filter((item): item is string => typeof item === "string")
+    : undefined;
+  return {
+    ...record,
+    api_major: apiMajor,
+    contract_revision: contractRevision,
+    features,
+    token_permissions: tokenPermissions,
+    caller_permissions: callerPermissions,
+  };
 }
 
 export function missingCapabilityFeatures(capabilities: { features: string[] }): string[] {

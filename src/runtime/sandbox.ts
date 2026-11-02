@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,7 +82,13 @@ export async function qualifyMacosSandbox(
       };
       return cached;
     }
-    const childLeak = await execFn(profile, ["/bin/sh", "-c", `/bin/cat ${outside}`], inside);
+    // The path reaches the shell as $1, never as command text.
+    const childLeak = await execFn(
+      profile,
+      // nosemgrep: dispatch-ts-shell-dash-c
+      ["/bin/sh", "-c", '/bin/cat "$1"', "sh", outside],
+      inside,
+    );
     if (childLeak.code === 0 && childLeak.stdout.includes("secret")) {
       cached = {
         available: false,
@@ -360,5 +366,3 @@ async function probeDeniedNetwork(
 function literal(path: string): string {
   return `"${path.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
-
-export { readFile };

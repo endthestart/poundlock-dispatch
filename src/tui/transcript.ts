@@ -19,9 +19,11 @@
  */
 import { Markdown, type MarkdownTheme, visibleWidth } from "@earendil-works/pi-tui";
 import { displaySafe } from "@shared/display-safe";
-import type { ChatMessage } from "@shared/types";
+import { conversationTimeline, type TranscriptDensity } from "@shared/live-work-view";
+import type { ChatMessage, LiveWorkEntry } from "@shared/types";
 import type { Colours } from "./colour.js";
 import { demoteDeepHeadings } from "./markdown-theme.js";
+import { messageHead } from "./message-head.js";
 import { OWN_MESSAGE_SHARE, wrap } from "./render.js";
 
 /**
@@ -35,7 +37,7 @@ const OSC_133_PROMPT_START = "\x1b]133;A\x07";
 
 /** A message component: what the transcript view keys, updates and drops. */
 interface TranscriptRow {
-  update(message: ChatMessage): void;
+  update(message: ChatMessage, density: TranscriptDensity): void;
   render(width: number): string[];
   invalidate(): void;
 }
@@ -48,11 +50,13 @@ interface TranscriptRow {
  */
 class UserMessageRow implements TranscriptRow {
   private text = "";
+  private head = "";
 
   constructor(private readonly colours: Colours) {}
 
   update(message: ChatMessage): void {
     this.text = message.text;
+    this.head = messageHead(message);
   }
 
   invalidate(): void {}
@@ -63,8 +67,14 @@ class UserMessageRow implements TranscriptRow {
     const longest = Math.max(...body.map((line) => visibleWidth(line)), 0);
     const indent = " ".repeat(Math.max(0, width - longest - 2));
     const bar = this.colours.paint("accent", "▏");
-    const lines = body.map((line) => `${indent}${bar} ${line}`);
-    if (lines.length) lines[0] = `${OSC_133_PROMPT_START}${lines[0]}`;
+    const head = this.colours.paint(
+      "faint",
+      `${" ".repeat(Math.max(0, width - visibleWidth(this.head)))}${this.head}`,
+    );
+    const lines = [
+      `${OSC_133_PROMPT_START}${head}`,
+      ...body.map((line) => `${indent}${bar} ${line}`),
+    ];
     lines.push("");
     return lines;
   }
@@ -79,7 +89,8 @@ class UserMessageRow implements TranscriptRow {
 class ManagerMessageRow implements TranscriptRow {
   private readonly markdown: Markdown;
   private lastText: string | undefined;
-  private toolTraceLine = "";
+  private toolTraceLines: string[] = [];
+  private head = "";
 
   constructor(
     theme: MarkdownTheme,
@@ -92,7 +103,8 @@ class ManagerMessageRow implements TranscriptRow {
     });
   }
 
-  update(message: ChatMessage): void {
+  update(message: ChatMessage, density: TranscriptDensity): void {
+    this.head = messageHead(message);
     // Markdown's own cache keys on `(text, width)`; only calling `setText`
     // when the text actually changed keeps a message nobody edited from ever
     // being invalidated, let alone re-parsed.
@@ -100,9 +112,24 @@ class ManagerMessageRow implements TranscriptRow {
       this.lastText = message.text;
       this.markdown.setText(displaySafe(message.text));
     }
-    this.toolTraceLine = message.toolTrace?.length
-      ? `· ${message.toolTrace.map((tool) => (tool.error ? `${tool.name}!` : tool.name)).join(", ")}`
-      : "";
+    // Normal folds the steps into one line of names; Verbose shows each step's summary.
+    const trace = message.toolTrace ?? [];
+    this.toolTraceLines =
+      density === "verbose"
+        ? trace.map((tool) =>
+            this.colours.paint(
+              tool.error ? "fault" : "faint",
+              `${tool.error ? "!" : "·"} ${displaySafe(tool.summary)}`,
+            ),
+          )
+        : trace.length
+          ? [
+              this.colours.paint(
+                "faint",
+                `· ${trace.map((tool) => (tool.error ? `${tool.name}!` : tool.name)).join(", ")}`,
+              ),
+            ]
+          : [];
   }
 
   invalidate(): void {
@@ -111,9 +138,8 @@ class ManagerMessageRow implements TranscriptRow {
 
   render(width: number): string[] {
     const lines = this.markdown.render(width);
-    const out = lines.length ? [...lines] : [""];
-    if (this.toolTraceLine) out.push(this.colours.paint("faint", this.toolTraceLine));
-    out.push("");
+    const out = [this.colours.paint("faint", this.head), ...(lines.length ? lines : [""])];
+    out.push(...this.toolTraceLines, "");
     return out;
   }
 }
@@ -149,6 +175,31 @@ class SystemMessageRow implements TranscriptRow {
   }
 }
 
+/** A settled update between messages: what the work was doing, and when. */
+class ActivityRow implements TranscriptRow {
+  constructor(
+    private readonly entry: LiveWorkEntry,
+    private readonly colours: Colours,
+  ) {}
+
+  update(): void {}
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    const clock = new Date(this.entry.at).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    return [
+      ...wrap(`${clock}  ${displaySafe(this.entry.text)}`, width - 2).map((line, index) =>
+        this.colours.paint("faint", index === 0 ? `· ${line}` : `  ${line}`),
+      ),
+      "",
+    ];
+  }
+}
+
 function createRow(message: ChatMessage, theme: MarkdownTheme, colours: Colours): TranscriptRow {
   if (message.role === "user") return new UserMessageRow(colours);
   if (message.role === "manager") return new ManagerMessageRow(theme, colours);
@@ -174,24 +225,43 @@ export class TranscriptView {
     this.draftRow = new ManagerMessageRow(theme, colours);
   }
 
-  /** Reconcile against the latest messages. Cheap when little has changed. */
-  sync(messages: ChatMessage[], draft: string | undefined): void {
+  /**
+   * Reconcile against the latest messages and the work's settled updates,
+   * which sit between them as the desktop app's transcript places them: one
+   * per gap in Normal, every one in Verbose. Cheap when little has changed.
+   */
+  sync(
+    messages: ChatMessage[],
+    draft: string | undefined,
+    density: TranscriptDensity = "normal",
+    work: { entries?: LiveWorkEntry[]; activity?: string } = {},
+  ): void {
+    const timeline = conversationTimeline(messages, work.entries, work.activity, density);
     const seen = new Set<string>();
-    this.order = messages.map((message) => message.id);
-    for (const message of messages) {
-      seen.add(message.id);
-      let row = this.rows.get(message.id);
+    this.order = [];
+    for (const item of timeline) {
+      const key =
+        item.kind === "message" ? item.message.id : `activity:${item.entry.at}:${item.entry.text}`;
+      seen.add(key);
+      this.order.push(key);
+      let row = this.rows.get(key);
       if (!row) {
-        row = createRow(message, this.theme, this.colours);
-        this.rows.set(message.id, row);
+        row =
+          item.kind === "message"
+            ? createRow(item.message, this.theme, this.colours)
+            : new ActivityRow(item.entry, this.colours);
+        this.rows.set(key, row);
       }
-      row.update(message);
+      if (item.kind === "message") row.update(item.message, density);
     }
     for (const id of this.rows.keys()) if (!seen.has(id)) this.rows.delete(id);
 
     this.draftActive = Boolean(draft?.trim());
     if (this.draftActive)
-      this.draftRow.update({ id: "__draft__", role: "manager", text: draft ?? "", createdAt: "" });
+      this.draftRow.update(
+        { id: "__draft__", role: "manager", text: draft ?? "", createdAt: "" },
+        density,
+      );
   }
 
   invalidate(): void {

@@ -8,19 +8,11 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
-import { migrateLegacyData } from "@core/brand-migration";
-import { migrateSharedConfig } from "@core/config-migration";
-import { exists } from "@core/file-access";
-import { FolderLock } from "@core/folder-lock";
-import { DispatchHost, type HostFacilities } from "@core/host/dispatch-host";
-import { ProjectOrchestrator } from "@core/orchestration";
+import type { DispatchHost, HostFacilities } from "@core/host/dispatch-host";
 import { defaultConfigRoot } from "@core/paths";
-import { ProjectLifecycle } from "@core/project-lifecycle";
 import { FileStore } from "@core/store";
-import { createApprovalReviewer } from "@runtime/approval-reviewer";
-import { hostCommandPort } from "@runtime/host-command";
-import { createManagerProvider } from "@runtime/manager-provider";
-import { createPiWorker } from "@runtime/pi-worker";
+import { createDispatchHost } from "@runtime/host-factory";
+import { configureModelHttp } from "@runtime/model-http";
 import { configureSystemCertificateAuthorities } from "@runtime/system-ca";
 import { type AppearanceTheme, DEFAULT_APPEARANCE } from "@shared/appearance";
 import { type IpcChannel, ipcChannels } from "@shared/ipc";
@@ -49,19 +41,13 @@ import { denyPermissionRequests } from "./permissions";
 process.env.PI_SKIP_VERSION_CHECK = "1";
 process.env.PI_TELEMETRY = "0";
 configureSystemCertificateAuthorities();
+configureModelHttp();
 
-// Legacy launch flags remain accepted during the branding migration.
-for (const [key, value] of Object.entries(process.env)) {
-  if (key.startsWith("LOCKKEEP_"))
-    process.env[key.replace("LOCKKEEP_", "POUNDLOCK_DISPATCH_")] ??= value;
-}
 app.setName(APP_NAME);
-const dispatchData =
-  process.env.POUNDLOCK_DISPATCH_DATA_DIR || join(app.getPath("appData"), APP_NAME);
-if (!process.env.POUNDLOCK_DISPATCH_DATA_DIR) {
-  migrateLegacyData(join(app.getPath("appData"), "Lockkeep"), dispatchData);
-}
-app.setPath("userData", dispatchData);
+app.setPath(
+  "userData",
+  process.env.POUNDLOCK_DISPATCH_DATA_DIR || join(app.getPath("appData"), APP_NAME),
+);
 
 let mainWindow: BrowserWindow | undefined;
 let host: DispatchHost | undefined;
@@ -109,6 +95,10 @@ const facilities: HostFacilities = {
       }).show();
     app.dock?.setBadge(count > 0 ? String(count) : "");
   },
+  notifyAutopilot: (project, glance, preferences) => {
+    if (preferences.desktopNotifications && Notification.isSupported())
+      new Notification({ title: `Autopilot · ${glance.label}`, body: project }).show();
+  },
 };
 
 async function boot(): Promise<void> {
@@ -117,31 +107,12 @@ async function boot(): Promise<void> {
   // own.
   const store = new FileStore(dataRoot(), defaultConfigRoot());
   await store.init();
-  migrateSharedConfig(store.layout);
   const approvals = new ApprovalBroker(() => {
     void host?.emitState();
   });
-  host = new DispatchHost(facilities, store, approvals, {
-    worker: () => createPiWorker(),
-    // One writer per folder across clients: the desktop app and a terminal
-    // session must not dispatch workers into the same tree at once.
-    folderLock: new FolderLock(join(defaultConfigRoot(), "locks"), {
-      hostApp: "gui",
-      dataRoot: dataRoot(),
-    }),
-    reviewAction: (created) => createApprovalReviewer(created),
-    managerProvider: (wiring) =>
-      createManagerProvider(
-        wiring.getStore,
-        wiring.approvals,
-        async (text, projectId) => {
-          wiring.recordActivity(text, projectId);
-        },
-        wiring.onSelection,
-        wiring.capabilities,
-      ),
-    orchestrator: (deps) => new ProjectOrchestrator({ ...deps, hostCommands: hostCommandPort }),
-    lifecycle: (deps) => new ProjectLifecycle(deps),
+  host = createDispatchHost(facilities, store, approvals, {
+    hostApp: "gui",
+    dataRoot: dataRoot(),
   });
   let lastAppearanceTheme: AppearanceTheme | undefined;
   host.onState((state) => {
@@ -444,23 +415,16 @@ function routes(target: DispatchHost): Record<RequestChannel, (...args: any[]) =
     [ipcChannels.grantRead]: (id) => target.grantReadFile(id),
     [ipcChannels.grantFolder]: (id, mode) => target.grantFolderPicked(id, mode),
     [ipcChannels.revokeFolder]: (id, path) => target.revokeRoot(id, path),
-    [ipcChannels.connectionGet]: () => target.getConnection(),
     [ipcChannels.connectionSave]: (settings) => target.saveConnection(settings),
-    [ipcChannels.connectionClear]: () => target.clearConnection(),
     [ipcChannels.connectionTest]: () => target.testConnection(),
     [ipcChannels.modelsSave]: (roles) => target.saveModels(roles),
     [ipcChannels.serverRefresh]: () => target.refreshServer(),
     [ipcChannels.localManagerSave]: (settings) => target.saveLocalManager(settings),
     [ipcChannels.localManagerTest]: (settings) => target.testLocalManager(settings),
     [ipcChannels.webSearchSave]: (url) => target.saveWebSearch(url),
-    [ipcChannels.projectPreview]: (folder) => target.previewFolder(folder),
     [ipcChannels.projectCreateFolder]: (payload) => target.createProjectFromFolder(payload),
     [ipcChannels.projectCreateGit]: (payload) => target.createProjectFromGit(payload),
     [ipcChannels.projectOpen]: (id) => target.selectProject(id),
-    [ipcChannels.projectArchive]: (id, workflowId) =>
-      target.projectLifecycle("archive", { projectId: id, workflowId }),
-    [ipcChannels.projectRemove]: (id, workflowId) =>
-      target.projectLifecycle("remove", { projectId: id, workflowId }),
     [ipcChannels.projectLifecycle]: (action, targetRef) =>
       target.projectLifecycle(action, targetRef),
     [ipcChannels.projectUpdatePolicy]: (id, policy) => target.updateProjectPolicy(id, policy),
@@ -481,12 +445,9 @@ function routes(target: DispatchHost): Record<RequestChannel, (...args: any[]) =
     [ipcChannels.startRun]: (targetRef) => target.startRun(targetRef),
     [ipcChannels.pauseRun]: (targetRef) => target.pauseRun(targetRef),
     [ipcChannels.cancelRun]: (targetRef) => target.cancelRun(targetRef),
-    [ipcChannels.acceptReviewed]: (targetRef) => target.acceptReviewed(targetRef),
     [ipcChannels.reopenRun]: (targetRef) => target.reopenRun(targetRef),
     [ipcChannels.overrideRun]: (reason, targetRef) => target.overrideRun(reason, targetRef),
     [ipcChannels.retryTask]: (taskId, targetRef) => target.retryTask(taskId, targetRef),
-    [ipcChannels.startFresh]: (targetRef) => target.startFresh(targetRef),
-    [ipcChannels.clearCurrentRun]: (targetRef) => target.clearCurrentRun(targetRef),
     [ipcChannels.compactConversation]: (instructions, targetRef) =>
       target.compactConversation(instructions, targetRef),
     [ipcChannels.runHistory]: (targetRef) => target.runHistory(targetRef),
@@ -499,6 +460,9 @@ function routes(target: DispatchHost): Record<RequestChannel, (...args: any[]) =
     [ipcChannels.autopilotMergePreview]: (targetRef) => target.autopilotMergePreview(targetRef),
     [ipcChannels.autopilotMerge]: (targetRef) => target.autopilotMerge(targetRef),
     [ipcChannels.autopilotReport]: (targetRef) => target.autopilotReport(targetRef),
+    [ipcChannels.autopilotDrop]: (targetRef) => target.autopilotDrop(targetRef),
+    [ipcChannels.autopilotCleanupList]: () => target.autopilotCleanupList(),
+    [ipcChannels.autopilotCleanup]: (runIds) => target.autopilotCleanup(runIds),
     [ipcChannels.chooseFolder]: () => target.chooseFolder(),
   };
 }
@@ -510,18 +474,6 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
-  // The packaged helper, when there is one. Without it (a development build)
-  // each clone writes its own into a private folder; the current folder is
-  // never searched for one.
-  const packagedAskPass = process.resourcesPath
-    ? join(process.resourcesPath, "git-askpass.sh")
-    : undefined;
-  if (
-    !process.env.POUNDLOCK_DISPATCH_GIT_ASKPASS &&
-    packagedAskPass &&
-    (await exists(packagedAskPass))
-  )
-    process.env.POUNDLOCK_DISPATCH_GIT_ASKPASS = packagedAskPass;
   denyPermissionRequests(session.defaultSession);
   try {
     await boot();

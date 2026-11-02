@@ -1,6 +1,5 @@
 import type { TaskChange } from "@shared/board-changes";
 import { compactionEvidenceText, compactionsFromProvenance } from "@shared/compaction";
-import { milestoneGroups } from "@shared/milestones";
 import { projectReach } from "@shared/network";
 import {
   effectiveToolTrust,
@@ -23,13 +22,14 @@ import { destinationLabel } from "@shared/roles";
 import { visibleComposerInfolets } from "@shared/status-infolets";
 import { stuckCategoryLabel } from "@shared/stuck-task";
 import {
+  AUTOPILOT_BOARD_HINT,
   attemptStatusLabel,
-  autopilotProgressLine,
+  autopilotBoard,
   autopilotTaskView,
-  autopilotUnfinished,
   changedFiles,
   managerDecisionText,
   type TaskStateView,
+  taskStage,
   taskStateView,
 } from "@shared/task-view";
 import {
@@ -43,9 +43,9 @@ import {
   TASK_EXECUTION_PLACE,
   type TaskRecord,
 } from "@shared/types";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { ApprovalPanel } from "./approvals";
-import { ConfirmDialog, Dialog, useMenu } from "./dialog";
+import { ConfirmDialog, Dialog, useMenu, usePendingAction } from "./dialog";
 import { Markdown } from "./Markdown";
 
 type Snapshot = NonNullable<AppStateView["snapshot"]>;
@@ -65,12 +65,18 @@ function liveWorkClock(at: string): string {
  * steps that produced it read in the order they actually happened, instead
  * of trailing after every later message via the transient live-work log.
  */
-export function MessageToolTrace({ trace }: { trace: ChatMessage["toolTrace"] }) {
+export function MessageToolTrace({
+  trace,
+  open,
+}: {
+  trace: ChatMessage["toolTrace"];
+  open: boolean;
+}) {
   if (!trace?.length) return null;
   const failed = trace.filter((item) => item.error).length;
-  // Collapsed by default: the steps are evidence, not part of what the manager said.
+  // Folded unless the transcript is verbose: the steps are evidence, not part of what the manager said.
   return (
-    <details className="message-tool-trace">
+    <details className="message-tool-trace" open={open}>
       <summary>
         {trace.length === 1 ? "1 step" : `${trace.length} steps`}
         {failed ? ` · ${failed} failed` : ""}
@@ -100,13 +106,19 @@ function MessageToolSteps({ trace }: { trace: NonNullable<ChatMessage["toolTrace
   );
 }
 
-export function LiveWorkEvent({ entry }: { entry: LiveWorkEntry }) {
+export function LiveWorkEvent({ entry, hidden }: { entry: LiveWorkEntry; hidden?: number }) {
   return (
     <div className="live-work-in-transcript">
       <ol className="live-work">
         <li>
           <time dateTime={entry.at}>{liveWorkClock(entry.at)}</time>
           <span>{entry.text}</span>
+          {hidden ? (
+            <span className="hint">
+              {" "}
+              · {hidden} earlier {hidden === 1 ? "step" : "steps"} hidden; Verbose shows them
+            </span>
+          ) : null}
         </li>
       </ol>
     </div>
@@ -441,23 +453,10 @@ export function DecisionDock({
   run: Run;
   onState: (state: AppStateView) => void;
 }) {
-  const [pending, setPending] = useState("");
+  const { pending, act } = usePendingAction(run);
   const [dialog, setDialog] = useState<"override" | "cancel">();
-  const pendingRef = useRef(false);
   const status = projectStatusView(selected, { approvals: state.approvals });
   const project = selected.project;
-  const plan = selected.pendingBoard?.plan ?? selected.plan;
-  async function act(label: string, work: () => Promise<unknown>) {
-    if (pendingRef.current) return;
-    pendingRef.current = true;
-    setPending(label);
-    try {
-      await run(work);
-    } finally {
-      pendingRef.current = false;
-      setPending("");
-    }
-  }
   const disabled = Boolean(pending) || state.busy;
   // Only a manager question is "asked"; environment, configuration and other
   // Dispatch-raised blocks use the shared status derivation's wording.
@@ -808,14 +807,9 @@ export function Inspector({
     : [];
   const approved = Boolean(plan?.approved);
   // A board run's tasks show where Autopilot has them, not where interactive work left them.
-  const autopilotStages = new Map(
-    state.autopilot?.board ? state.autopilot.cases.map((item) => [item.id, item.stage]) : [],
-  );
+  const board = autopilotBoard(selected.tasks, plan?.milestones ?? [], state.autopilot);
   const renderTask = (task: TaskRecord) => {
-    // Merged or dropped work is the board's own again.
-    const stage = ["applied", "cancelled"].includes(task.status)
-      ? undefined
-      : autopilotStages.get(task.id);
+    const stage = board ? taskStage(task, board.stages) : undefined;
     const view = stage ? autopilotTaskView(stage) : taskStateView(task.status);
     const attempt = task.attempts.at(-1);
     const active = IN_FLIGHT_OR_REVIEW.includes(task.status);
@@ -843,7 +837,6 @@ export function Inspector({
           </summary>
           <TaskEvidence
             task={task}
-            selected={selected}
             fixRounds={fixRoundsPerTask(
               selected.project.policy.fixRoundsPerTask,
               state.permissions.fixRoundsPerTask,
@@ -923,51 +916,37 @@ export function Inspector({
             <h2 id="tasks-heading">{approved ? "Tasks" : "Proposed tasks"}</h2>
           </div>
           <p className="progress-line" aria-live="polite">
-            {autopilotStages.size
-              ? autopilotProgressLine([...autopilotStages.values()])
-              : planProgressEvidence(selected.tasks)}
+            {board ? board.progress : planProgressEvidence(selected.tasks)}
           </p>
-          {autopilotStages.size ? (
-            milestoneGroups(selected.tasks, plan?.milestones ?? []).map((group) => {
-              // Earlier runs' work counts too: merged tasks are done, and tasks an
-              // earlier run left blocked were replanned since. Counting only this
-              // run's stages showed a finished M1 as "0 of 95" (owner, 19 Oct).
-              const leftBehind = (task: TaskRecord) =>
-                autopilotUnfinished(autopilotStages.get(task.id)) ||
-                (!autopilotStages.has(task.id) && task.status === "blocked");
-              const shown = group.tasks.filter((task) => !leftBehind(task));
-              const unfinished = group.tasks.filter(leftBehind);
-              const verified = group.tasks.filter(
-                (task) => autopilotStages.get(task.id) === "accepted" || task.status === "applied",
-              ).length;
-              return (
-                <div key={group.id} className="task-group">
-                  {group.title ? (
-                    <h3 className="task-group-head">
-                      {group.title}
-                      <span className="meta">
-                        {verified} of {group.tasks.length - unfinished.length} verified
-                      </span>
-                    </h3>
-                  ) : null}
-                  <ol className="task-list">{shown.map(renderTask)}</ol>
-                  {unfinished.length ? (
-                    <details className="disclosure task-unfinished">
-                      <summary>
-                        {unfinished.length} did not finish; the Planner replans what they were for
-                      </summary>
-                      <ol className="task-list">{unfinished.map(renderTask)}</ol>
-                    </details>
-                  ) : null}
-                </div>
-              );
-            })
+          {board ? (
+            board.groups.map((group) => (
+              <div key={group.id} className="task-group">
+                {group.title ? (
+                  <h3 className="task-group-head">
+                    {group.title}
+                    <span className="meta">
+                      {group.verified} of {group.total} verified
+                    </span>
+                  </h3>
+                ) : null}
+                <ol className="task-list">{group.tasks.map(renderTask)}</ol>
+                {group.unfinished.length ? (
+                  <details className="disclosure task-unfinished">
+                    <summary>
+                      {group.unfinished.length} did not finish; the Planner replans what they were
+                      for
+                    </summary>
+                    <ol className="task-list">{group.unfinished.map(renderTask)}</ol>
+                  </details>
+                ) : null}
+              </div>
+            ))
           ) : (
             <ol className="task-list">{selected.tasks.map(renderTask)}</ol>
           )}
           <p className="hint">
-            {autopilotStages.size
-              ? "Verified means the project's checks passed in Autopilot's container; nobody has reviewed the work yet. Merge it from the Autopilot panel when the run ends."
+            {board
+              ? AUTOPILOT_BOARD_HINT
               : "Checkmarks mean the Project Manager accepted the work. Worker output below each task is evidence; message the Project Manager to change the plan."}
           </p>
         </section>
@@ -1184,15 +1163,7 @@ function Snapshots({ attemptId, names }: { attemptId: string; names: string[] })
   );
 }
 
-function TaskEvidence({
-  task,
-  selected,
-  fixRounds,
-}: {
-  task: TaskRecord;
-  selected: Snapshot;
-  fixRounds: number;
-}) {
+function TaskEvidence({ task, fixRounds }: { task: TaskRecord; fixRounds: number }) {
   const [selectedAttempt, setSelectedAttempt] = useState<string>();
   useEffect(() => setSelectedAttempt(undefined), [task.id]);
   const attempt = task.attempts.find((item) => item.id === selectedAttempt) ?? task.attempts.at(-1);

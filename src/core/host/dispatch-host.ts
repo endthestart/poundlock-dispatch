@@ -25,6 +25,11 @@ import { assertHttpsGitUrl, forgeHostMatches } from "@core/git";
 import {
   type AutopilotFacilities,
   autopilotBusy,
+  autopilotCleanupList,
+  autopilotTakesMessage,
+  checkAutopilotStart,
+  cleanupAutopilot,
+  dropAutopilot,
   exportAutopilot,
   mergeAutopilot,
   messageAutopilot,
@@ -39,21 +44,29 @@ import { newId } from "@core/ids";
 import type { WorkerPort } from "@core/interactive-worker";
 import { GLOBAL_LIVE_WORK, LiveWorkBook } from "@core/live-work";
 import { normalizeLocalManager, probeLocalManager } from "@core/local-manager";
+import { retireLegacyLoopStop } from "@core/loop-stop-retirement";
+import { ManagerSpend } from "@core/manager-spend";
 import type { ManagerPort, OrchestratorDeps, ProjectOrchestrator } from "@core/orchestration";
 import { projectFiles } from "@core/paths";
 import { PoundlockClient } from "@core/poundlock";
 import type { ProjectLifecycle } from "@core/project-lifecycle";
 import { attachProjectForge, createFolderProject, createGitProject } from "@core/projects";
 import { recoveryNoticesFromSnapshot } from "@core/recovery-notices";
+import { retireLegacyRoutingRevision } from "@core/routing-revision-retirement";
 import { connectionDiscoveryChanged, ServerDiscovery } from "@core/server-discovery";
 import { shouldPauseOnDispatchSession } from "@core/session-pause";
-import { previewFolder } from "@core/snapshot";
 import { snapshotDataUrl } from "@core/snapshots";
 import type { FileStore } from "@core/store";
+import { WeekSpend } from "@core/week-spend";
 import { projectWorkingRoot } from "@core/workflow-support";
 import type { AppearanceSettings } from "@shared/appearance";
 import { normalizeAppearance } from "@shared/appearance";
-import type { AutopilotMergePreview, AutopilotStartOptions } from "@shared/auto-run";
+import type {
+  AutopilotCleanupItem,
+  AutopilotMergePreview,
+  AutopilotStartOptions,
+} from "@shared/auto-run";
+import { type AutopilotGlance, autopilotArrivals, autopilotGlance } from "@shared/autopilot-card";
 import { type ContextUsage, compactionLine, compactionSkippedText } from "@shared/compaction";
 import { composerSendBlocked } from "@shared/composer-guard";
 import type { EscalationSettings } from "@shared/escalation";
@@ -69,16 +82,16 @@ import {
   catalogFromProbe,
   catalogMatchesBinding,
   effectiveDestination,
-  guessRoleMap,
   managerChoice,
   roleMapReady,
+  sameRuntimeSlot,
 } from "@shared/roles";
 import { autopilotProgressLine } from "@shared/task-view";
 import type { TrayRun } from "@shared/tray-view";
 import type {
   AccessRoot,
   AppStateView,
-  ConnectionSettings,
+  ConnectionAddress,
   ExportOutcome,
   ForgeKind,
   LocalManagerSettings,
@@ -88,7 +101,7 @@ import type {
   ProjectRecord,
   ProjectSnapshot,
 } from "@shared/types";
-import { defaultPolicy, EXAMPLE_CONTROLLER_URL } from "@shared/types";
+import { defaultPolicy, EXAMPLE_CONTROLLER_URL, grantPermissionHint } from "@shared/types";
 import type { UiPreferences } from "@shared/ui-preferences";
 import { normalizeUiPreferences } from "@shared/ui-preferences";
 
@@ -109,6 +122,8 @@ export interface HostFacilities {
    * never clears.
    */
   notifyNeedsYou?(count: number, preferences: UiPreferences, alert: boolean): void;
+  /** An Autopilot run stopped building: built, needs you, stopped or failed. */
+  notifyAutopilot?(project: string, glance: AutopilotGlance, preferences: UiPreferences): void;
   /** Autopilot (ADR 016): where runs live and how a runner starts. Absent: no Autopilot. */
   autopilot?: AutopilotFacilities;
   /** Open a file Dispatch wrote, such as a run's report, in the owner's default app. */
@@ -169,6 +184,9 @@ export class DispatchHost {
   private notice: AppStateView["notice"];
   private readonly liveWorkBook = new LiveWorkBook();
   private lastNeedingYou = 0;
+  private lastGlances: Record<string, AutopilotGlance> = {};
+  private readonly managerSpend = new ManagerSpend();
+  private readonly weekSpend = new WeekSpend();
   private lastUsageRefreshAt = 0;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   /** Who holds a project's folder, when this client could not take it. */
@@ -240,6 +258,9 @@ export class DispatchHost {
       },
       folderLock: this.folderLock,
       notify: () => this.emitState(),
+      onReviewReady: (projectId) => {
+        void this.reviewNow(projectId);
+      },
       onActivity: (text, projectId) => {
         this.recordActivity(text || undefined, projectId);
       },
@@ -273,6 +294,12 @@ export class DispatchHost {
         text: `An interrupted project removal could not finish: ${error.message}`,
       };
     });
+    await retireLegacyRoutingRevision(this.store).catch((error: Error) => {
+      this.notice = {
+        kind: "error",
+        text: `Could not update the saved model roles: ${error.message}`,
+      };
+    });
     // Before recovery, so a project from a version that ran Poundlock jobs is
     // recovered as the interactive project it now is.
     for (const project of await this.store.listProjects()) {
@@ -281,6 +308,12 @@ export class DispatchHost {
         this.notice = {
           kind: "error",
           text: `Could not bring “${project.name}” up to date with Poundlock jobs being manual: ${error.message}`,
+        };
+      });
+      await retireLegacyLoopStop(this.store, project.id).catch((error: Error) => {
+        this.notice = {
+          kind: "error",
+          text: `Could not update the stopped run of “${project.name}”: ${error.message}`,
         };
       });
     }
@@ -326,14 +359,10 @@ export class DispatchHost {
   }
 
   private async pollActive(): Promise<void> {
-    await this.folderLock?.heartbeat();
-    for (const project of await this.store.listProjects()) {
-      if (project.removing || this.lifecycle.isPending(project.id)) continue;
-      if (!POLLED.includes(project.status)) continue;
-      await this.orchestrator.tick(project.id).catch((error: Error) => {
-        this.notice = { kind: "error", text: error.message };
-      });
-    }
+    // A client that found its folder held tries again each poll, so it drives once
+    // the holder is gone instead of watching nobody for the session (UX review, 30 Oct).
+    for (const projectId of [...this.lockHolders.keys()]) await this.claimFolder(projectId);
+    for (const project of await this.store.listProjects()) await this.tickProject(project);
     await this.emitState();
     if (Date.now() - this.lastUsageRefreshAt >= USAGE_REFRESH_INTERVAL_MS) {
       this.lastUsageRefreshAt = Date.now();
@@ -341,11 +370,27 @@ export class DispatchHost {
     }
   }
 
+  private async tickProject(project: ProjectRecord): Promise<void> {
+    if (project.removing || this.lifecycle.isPending(project.id)) return;
+    if (!POLLED.includes(project.status)) return;
+    await this.orchestrator.tick(project.id).catch((error: Error) => {
+      this.notice = { kind: "error", text: error.message };
+    });
+  }
+
+  /** Review a worker's result now rather than on the next poll, unless polling has stopped. */
+  private async reviewNow(projectId: string): Promise<void> {
+    const project = this.pollTimer ? await this.store.getProject(projectId) : undefined;
+    if (!project) return;
+    await this.tickProject(project);
+    await this.emitState();
+  }
+
   // -------------------------------------------------------------------- state
 
   private autopilotPhaseCache = new Map<
     string,
-    { at: number; phase?: "building" | "interrupted"; progress?: string }
+    { at: number; phase?: "building" | "interrupted"; progress?: string; glance?: AutopilotGlance }
   >();
 
   /**
@@ -375,6 +420,14 @@ export class DispatchHost {
             cached = {
               at: now,
               ...(phase ? { phase } : {}),
+              ...(view
+                ? {
+                    glance: autopilotGlance(
+                      view,
+                      (await this.store.getPlan(project.id))?.requirements ?? [],
+                    ),
+                  }
+                : {}),
               ...(phase && view
                 ? {
                     progress: autopilotProgressLine(
@@ -425,7 +478,13 @@ export class DispatchHost {
       this.facilities.autopilot && projectSnapshot
         ? await projectAutopilot(this.facilities.autopilot, projectSnapshot.project)
         : undefined;
-    const autopilotProjects = await this.autopilotPhases(projects);
+    await this.autopilotPhases(projects);
+    const autopilotGlances = Object.fromEntries(
+      projects.flatMap((project) => {
+        const glance = this.autopilotPhaseCache.get(project.id)?.glance;
+        return glance ? [[project.id, glance]] : [];
+      }),
+    );
     return {
       approvals: this.approvals.list(),
       connection: await this.store.getConnectionPublic(),
@@ -451,8 +510,17 @@ export class DispatchHost {
         ? this.contextUsages.get(this.selectedProjectId)
         : undefined,
       ...(autopilot ? { autopilot } : {}),
-      ...(Object.keys(autopilotProjects).length ? { autopilotProjects } : {}),
+      ...(Object.keys(autopilotGlances).length ? { autopilotGlances } : {}),
       autopilotAvailable: Boolean(this.facilities.autopilot),
+      ...(this.facilities.autopilot
+        ? {
+            weekUsd: await this.weekSpend.total(
+              projects.map((project) => projectFiles(this.store.layout.root, project.id).sessions),
+              this.facilities.autopilot.paths.runs,
+              new Date(),
+            ),
+          }
+        : {}),
       watching: this.watchingOnly(projectSnapshot?.project),
       liveWork: this.liveWorkBook.view(this.selectedProjectId).liveWork,
       notice: this.notice,
@@ -464,6 +532,9 @@ export class DispatchHost {
     const project = await this.store.getProject(projectId);
     if (!project) return undefined;
     const brief = (await this.store.getBrief(projectId)).trim();
+    const managerUsd = await this.managerSpend.of(
+      projectFiles(this.store.layout.root, projectId).sessions,
+    );
     return {
       project,
       plan: await this.store.getPlan(projectId),
@@ -471,6 +542,7 @@ export class DispatchHost {
       pendingBoard: await this.store.getPendingBoard(projectId),
       messages: await this.store.getMessages(projectId),
       ...(brief ? { brief } : {}),
+      ...(managerUsd > 0 ? { managerUsd } : {}),
     };
   }
 
@@ -480,6 +552,12 @@ export class DispatchHost {
     if (needing !== this.lastNeedingYou)
       this.facilities.notifyNeedsYou?.(needing, state.ui, needing > this.lastNeedingYou);
     this.lastNeedingYou = needing;
+    const glances = state.autopilotGlances ?? {};
+    for (const { projectId, glance } of autopilotArrivals(this.lastGlances, glances)) {
+      const name = state.projects.find((project) => project.id === projectId)?.name ?? projectId;
+      this.facilities.notifyAutopilot?.(name, glance, state.ui);
+    }
+    this.lastGlances = glances;
     for (const listener of this.listeners) listener(state);
   }
 
@@ -643,6 +721,13 @@ export class DispatchHost {
   replyInput(text: string, target?: Partial<ProjectActionTarget>): Promise<AppStateView> {
     return this.control(target, async (projectId) => {
       await this.assertComposerAllowed(text, projectId, true);
+      // A manager question left over from before the run must not start a turn on
+      // the board the run holds: the run takes the words (UX review, 30 Oct).
+      const project = await this.store.getProject(projectId);
+      if (project && (await autopilotTakesMessage(this.facilities.autopilot, project))) {
+        await messageAutopilot(this.facilities.autopilot!, this.store, project, text);
+        return;
+      }
       await this.grantRequestedFolder(projectId, text);
       await this.orchestrator.reply(projectId, text);
     });
@@ -660,7 +745,7 @@ export class DispatchHost {
       async (projectId) => {
         await this.assertComposerAllowed(text, projectId);
         const project = await this.store.getProject(projectId);
-        if (project && (await autopilotBusy(this.facilities.autopilot, project)))
+        if (project && (await autopilotTakesMessage(this.facilities.autopilot, project)))
           await messageAutopilot(this.facilities.autopilot!, this.store, project, text);
         else await this.orchestrator.sendMessage(projectId, text);
       },
@@ -711,6 +796,8 @@ export class DispatchHost {
       const project = (await this.store.getProject(projectId))!;
       if (["running", "waiting_for_capacity", "reviewing"].includes(project.status))
         throw new Error("Pause the interactive run before Autopilot builds this project.");
+      // So does any refusal that needs no plan: the folder, and a worker off the operator's network.
+      await checkAutopilotStart(facilities, this.store, project);
       const plan = await this.store.getPlan(projectId);
       if (!plan?.approved || (await this.store.getPendingBoard(projectId))) {
         await this.orchestrator.approvePlan(projectId, undefined, true);
@@ -731,7 +818,7 @@ export class DispatchHost {
       await this.store.appendMessage(projectId, {
         id: newId("msg"),
         role: "system",
-        text: `Autopilot is building this plan unattended (${started.runId}). It keeps running if you quit Poundlock Dispatch; follow it in the Autopilot panel.`,
+        text: "Autopilot started building the approved plan. It keeps going if you quit the app; its card below shows how it stands.",
         createdAt: new Date().toISOString(),
       });
       this.notice = {
@@ -800,6 +887,33 @@ export class DispatchHost {
     });
   }
 
+  /** Drop the newest run: its worktree goes for good; its verified work can still be merged. */
+  autopilotDrop(target?: Partial<ProjectActionTarget>): Promise<AppStateView> {
+    return this.control(target, async (projectId) => {
+      const project = (await this.store.getProject(projectId))!;
+      await dropAutopilot(this.requireAutopilot(), project);
+      this.notice = {
+        kind: "info",
+        text: "Dropped the Autopilot run and removed its working copy. Its verified work can still be merged or exported.",
+      };
+    });
+  }
+
+  /** Ended runs of every project whose working copies a cleanup can remove, biggest first. */
+  autopilotCleanupList(): Promise<AutopilotCleanupItem[]> {
+    return autopilotCleanupList(this.requireAutopilot());
+  }
+
+  /** Drop the runs the owner picked in the cleanup. */
+  async autopilotCleanup(runIds: string[]): Promise<AppStateView> {
+    const removed = await cleanupAutopilot(this.requireAutopilot(), runIds);
+    this.notice = {
+      kind: "info",
+      text: `Removed the working copies of ${removed} Autopilot ${removed === 1 ? "run" : "runs"}. Their verified work can still be merged or exported.`,
+    };
+    return this.getState();
+  }
+
   /** Save the run's verified work as a patch; never applied to the folder. */
   async autopilotExport(target?: Partial<ProjectActionTarget>): Promise<ExportOutcome> {
     const projectId = await this.boundProject(this.actionTarget(target));
@@ -853,13 +967,6 @@ export class DispatchHost {
     });
   }
 
-  acceptReviewed(target?: Partial<ProjectActionTarget>): Promise<AppStateView> {
-    return this.control(target, async (projectId) => {
-      await this.assertNoAutopilot(projectId);
-      await this.orchestrator.acceptReviewed(projectId);
-    });
-  }
-
   reopenRun(target?: Partial<ProjectActionTarget>): Promise<AppStateView> {
     return this.control(target, async (projectId) => {
       await this.assertNoAutopilot(projectId);
@@ -901,14 +1008,6 @@ export class DispatchHost {
           outcome.status === "compacted" ? compactionLine(outcome) : compactionSkippedText(outcome),
       };
     });
-  }
-
-  async startFresh(target?: Partial<ProjectActionTarget>): Promise<AppStateView> {
-    return this.runLifecycle("newConversation", this.actionTarget(target));
-  }
-
-  async clearCurrentRun(target?: Partial<ProjectActionTarget>): Promise<AppStateView> {
-    return this.runLifecycle("newRun", this.actionTarget(target));
   }
 
   async projectLifecycle(
@@ -1018,10 +1117,6 @@ export class DispatchHost {
       return undefined;
     const holder = this.lockHolders.get(project.id);
     return { heldBy: holder?.hostApp, pid: holder?.pid };
-  }
-
-  async previewFolder(folder: string) {
-    return previewFolder(folder);
   }
 
   async chooseFolder(): Promise<string | undefined> {
@@ -1185,12 +1280,15 @@ export class DispatchHost {
           !probe.permissions.includes("external:invoke")
         )
           throw new Error(
-            `The current application token cannot use an external ${label}. In Poundlock Access, create a replacement token with Call external providers, save it under Connection, then test again.`,
+            `The current application token cannot use an external ${label}. ${grantPermissionHint(["external:invoke"], probe.capabilities)}`,
           );
       }
     }
-    if (project.policy.managerModel !== policy.managerModel && this.activeManager?.projectId === id)
-      this.activeManager = undefined;
+    if (project.policy.managerModel !== policy.managerModel) {
+      // Choosing a manager ends a switch to the local fallback.
+      project.managerFallback = undefined;
+      if (this.activeManager?.projectId === id) this.activeManager = undefined;
+    }
     project.policy = policy;
     await this.store.saveProject(project);
     if (oldTrust !== newTrust) {
@@ -1362,12 +1460,15 @@ export class DispatchHost {
   }
 
   /** Grant the manager one exact file it would otherwise be refused. */
-  async grantReadFile(id: string): Promise<AppStateView> {
+  /** Let the manager read one excluded file: the path given, or one the owner picks. */
+  async grantReadFile(id: string, path?: string): Promise<AppStateView> {
     const project = await this.store.getProject(id);
     if (!project) throw new Error("Project not found.");
-    const chosen = await this.facilities.chooseFile?.({
-      title: "Allow the manager to read this exact excluded file",
-    });
+    const chosen =
+      path ??
+      (await this.facilities.chooseFile?.({
+        title: "Allow the manager to read this exact excluded file",
+      }));
     if (chosen) {
       // Grants name the selected target, not a symlink that can later be
       // redirected, matching authorizedReadPath's rule.
@@ -1392,7 +1493,11 @@ export class DispatchHost {
     };
   }
 
-  async saveConnection(settings: ConnectionSettings): Promise<AppStateView> {
+  /**
+   * Saves the address and token only. A role map saved here skipped Save models' checks, so
+   * the wizard's unconfirmed suggestions, an external worker among them, became the roles (30 Oct).
+   */
+  async saveConnection(settings: ConnectionAddress): Promise<AppStateView> {
     await this.orchestrator.shutdown();
     this.approvals.clear();
     const existing = await this.store.getConnection();
@@ -1400,7 +1505,7 @@ export class DispatchHost {
     await this.store.saveConnection({
       url: settings.url.trim(),
       token: settings.token,
-      roles: changed ? {} : (settings.roles ?? existing.roles),
+      roles: changed ? {} : existing.roles,
       profiles: changed ? {} : existing.profiles,
     });
     this.managerProvider.clear();
@@ -1412,17 +1517,8 @@ export class DispatchHost {
       kind: "info",
       text: changed
         ? "New connection saved. Verify its token and choose roles before starting work."
-        : "Connection and role map saved on this computer.",
+        : "Connection saved on this computer.",
     };
-    return this.getState();
-  }
-
-  async clearConnection(): Promise<AppStateView> {
-    await this.orchestrator.shutdown();
-    this.approvals.clear();
-    this.managerProvider.clear();
-    await this.store.clearConnection();
-    this.discovery.invalidate();
     return this.getState();
   }
 
@@ -1440,18 +1536,8 @@ export class DispatchHost {
       this.recordActivity("Testing the Poundlock connection…", GLOBAL_LIVE_WORK);
       await this.emitState();
       await this.refreshServerInfo();
-      const lastProbe = this.discovery.probe;
-      const current = await this.store.getConnection();
-      if (current.url !== connection.url || current.token !== connection.token)
-        return this.getState();
-      if (lastProbe?.ok) {
-        const latest = await this.store.getConnection();
-        if (!roleMapReady(latest.roles))
-          await this.store.saveConnection({
-            ...latest,
-            roles: { ...guessRoleMap(lastProbe), ...latest.roles },
-          });
-      }
+      // Roles are the owner's to choose, through saveModels and its checks: a test
+      // never binds them. The wizard pre-fills its own draft.
       return this.getState();
     });
   }
@@ -1504,6 +1590,33 @@ export class DispatchHost {
           `The ${stale[0]} model ${stale[1]?.profileName ?? stale[1]?.profileId} is no longer served by Poundlock. Choose another before saving.`,
         );
     }
+    const bound = (binding: RoleMap[keyof RoleMap]) =>
+      binding ? catalogMatchesBinding(effectiveCatalog, binding) : undefined;
+    const disabled = Object.entries(roles).find(
+      ([, binding]) => bound(binding)?.status === "disabled",
+    );
+    if (disabled)
+      throw new Error(
+        `The ${disabled[0]} model ${bound(disabled[1])?.name} is disabled in Poundlock. Choose another before saving.`,
+      );
+    // Two models on one machine's runtime slot take turns: every switch between
+    // the manager and the worker unloads one and loads the other.
+    const manager = bound(roles.manager),
+      worker = bound(roles.interactive);
+    if (
+      manager &&
+      worker &&
+      (manager.profileId ?? manager.id) !== (worker.profileId ?? worker.id) &&
+      sameRuntimeSlot(manager, worker)
+    )
+      throw new Error(
+        `${manager.name} and ${worker.name} share one machine's model slot, so every turn would unload one to load the other. Choose a worker on another machine, or the manager's model for both.`,
+      );
+    const fallback = roles.fallback && catalogMatchesBinding(effectiveCatalog, roles.fallback);
+    if (fallback && fallback.dataDestination !== "operator_network")
+      throw new Error(
+        `The local fallback must run on your own network; ${fallback.name} sends work to ${fallback.dataDestination ?? "an unknown destination"}.`,
+      );
     for (const [role, binding] of Object.entries(roles)) {
       if (!binding?.reasoning) continue;
       if (!isReasoningChoice(binding.reasoning))
@@ -1525,7 +1638,7 @@ export class DispatchHost {
       !this.discovery.probe.permissions.includes("external:invoke")
     )
       throw new Error(
-        "The current application token cannot use an external default. In Poundlock Access, create a replacement token with Call external providers, save it under Connection, then test again.",
+        `The current application token cannot use an external default. ${grantPermissionHint(["external:invoke"], this.discovery.probe.capabilities)}`,
       );
     await this.store.saveConnection({
       ...connection,
@@ -1574,7 +1687,7 @@ export class DispatchHost {
     return this.getState();
   }
 
-  async testLocalManager(settings: LocalManagerSettings) {
+  async testLocalManager(settings: Pick<LocalManagerSettings, "url" | "model" | "token">) {
     const existing = await this.store.getConnection();
     return probeLocalManager({
       ...settings,

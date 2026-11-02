@@ -16,6 +16,8 @@ export interface AutoControl {
   command: "stop" | "stop_now";
   nonce: string;
   at: string;
+  /** Why the runner itself asked to stop (a full disk), in words for the owner. */
+  reason?: string;
 }
 
 /**
@@ -33,6 +35,8 @@ export class AutoLedger {
   private seq = 0;
   /** A crash mid-append left a partial last line: the next append starts a fresh one. */
   private torn = false;
+  /** What this process last wrote to `status.json`, so an unchanged status is not rewritten. */
+  private lastStatus: string | undefined;
 
   constructor(
     readonly runDir: string,
@@ -126,10 +130,14 @@ export class AutoLedger {
     return reduceAutoEvents((await this.load()).entries);
   }
 
-  /** The derived status a front end polls, with the runner's pid and a heartbeat. */
+  /** The derived status a front end polls, with the runner's pid, written only when it changes. */
   async writeStatus(extra: { pid: number; activity?: string }): Promise<AutoRunState> {
     const state = await this.state();
-    await writeJsonAtomic(this.statusFile, { ...state, ...extra, heartbeatAt: nowIso(this.clock) });
+    const status = { ...state, ...extra };
+    const text = JSON.stringify(status);
+    if (text === this.lastStatus) return state;
+    await writeJsonAtomic(this.statusFile, status);
+    this.lastStatus = text;
     return state;
   }
 
@@ -141,11 +149,16 @@ export class AutoLedger {
     }
   }
 
-  async writeControl(command: AutoControl["command"], nonce: string): Promise<void> {
+  async writeControl(
+    command: AutoControl["command"],
+    nonce: string,
+    reason?: string,
+  ): Promise<void> {
     await writeJsonAtomic(this.controlFile, {
       command,
       nonce,
       at: nowIso(this.clock),
+      ...(reason ? { reason } : {}),
     } satisfies AutoControl);
   }
 

@@ -51,6 +51,8 @@ export interface PlanProposal {
   milestones?: Milestone[];
   architecture?: string;
   scopeOut?: string[];
+  /** Commands the manager suggests as checks; the owner confirms them at Build it. */
+  checks?: string[];
 }
 
 interface CompiledPlan {
@@ -117,10 +119,12 @@ export function compilePlanProposal(
   };
   const others = (title: string) =>
     proposal.tasks.map((item) => item.title).filter((item) => item !== title);
+  const suggestedChecks = (proposal.checks ?? []).map((item) => item.trim()).filter(Boolean);
   return {
     plan: {
       compilerVersion: PLAN_COMPILER_VERSION,
       verificationCommands: checks,
+      ...(suggestedChecks.length ? { suggestedChecks } : {}),
       allowDependencyDownloads,
       environmentNeed,
       summary: proposal.summary,

@@ -81,6 +81,10 @@ export function createManagerProvider(
       managerKey = key;
       return manager;
     }
+    // The scripted manager applies worker results unreviewed, so it is only
+    // ever the explicit POUNDLOCK_DISPATCH_FAKE_MANAGER mode, never a fallback.
+    if (!connection.url || !connection.token)
+      throw new Error("Connect to Poundlock first: add its address and token in Settings.");
     const choice = managerChoice(project, connection.roles);
     const modelName = choice.id;
     const models = await new PoundlockClient(
@@ -116,7 +120,6 @@ export function createManagerProvider(
       name: profileDisplayName({
         name: profile.name ?? profile.id,
         modelLabel: profile.modelLabel,
-        upstreamModel: profile.upstreamModel,
       }),
       origin: choice.origin,
     });
@@ -172,11 +175,6 @@ export function createManagerProvider(
       ...(port.compact ? { compact: (ctx) => port.compact!({ ...ctx, reasoning }) } : {}),
     });
     if (manager && managerKey === key) return withReasoning(manager);
-    if (!connection.url || !connection.token) {
-      manager = createOfflineManager(store);
-      managerKey = "offline";
-      return manager;
-    }
     await onActivity(`Loading the Project Manager (${modelName})…`, project.id);
     manager = await createPiManager({
       store,
@@ -188,13 +186,18 @@ export function createManagerProvider(
       modelLabel: profileDisplayName({
         name: profile.name ?? profile.id,
         modelLabel: profile.modelLabel,
-        upstreamModel: profile.upstreamModel,
       }),
       contextTokens: profile.context_tokens,
       maxOutputTokens: profile.max_output_tokens,
       routingRevision: profile.routingRevision,
       dataDestination: profile.dataDestination,
       reasoningLevels: profile.reasoningLevels,
+      // Without these the manager never asked Anthropic to cache, and its turns cost $0.
+      route: {
+        provider: profile.provider,
+        servedModel: profile.servedModel,
+        pricing: profile.pricing,
+      },
       lastApprovedRoutingRevision:
         grant?.routingRevision ?? approvedRoutingRevisionForProfile(connection.roles, profile),
       capabilities: getCapabilities?.(),

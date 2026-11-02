@@ -17,7 +17,8 @@ npm test
 ```
 
 Tests are offline and use synthetic data. `npm run dev` opens the desktop app;
-`POUNDLOCK_DISPATCH_FAKE_MANAGER=1 npm run dev` uses a scripted manager. The
+`POUNDLOCK_DISPATCH_FAKE_MANAGER=1 npm run dev` uses a scripted manager. It does
+not make live workers fake or authorize any server work. The
 `tests/live-*.test.ts` files run only when `POUNDLOCK_URL` and `POUNDLOCK_TOKEN`
 name a controller you control.
 

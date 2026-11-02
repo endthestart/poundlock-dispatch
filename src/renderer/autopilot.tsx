@@ -1,37 +1,21 @@
+import type { AutopilotMergePreview } from "@shared/auto-run";
+import { autopilotCard, autopilotResumable } from "@shared/autopilot-card";
 import {
-  type AutopilotMergePreview,
-  type AutopilotView,
-  type CaseStage,
-  DEFAULT_AUTO_LIMITS,
-} from "@shared/auto-run";
-import { autopilotPlannerFor } from "@shared/autopilot-tier";
-import { autopilotProgressLine } from "@shared/task-view";
+  type AutopilotDetails,
+  autopilotDetails,
+  VERIFIED_LEAD,
+  VERIFIED_TAIL,
+} from "@shared/autopilot-details";
+import { type AutopilotStartPreview, autopilotStartPreview } from "@shared/autopilot-start";
 import type { AppStateView } from "@shared/types";
-import { useEffect, useRef, useState } from "react";
-import { Dialog } from "./dialog";
+import { useEffect, useState } from "react";
+import { AutopilotRunCard } from "./autopilot-card";
+import { AutopilotCleanupDialog, AutopilotDropDialog } from "./autopilot-cleanup";
+import { Dialog, usePendingAction } from "./dialog";
 
 type Run = <T>(work: () => Promise<T>) => Promise<T | undefined>;
 
-const PHASE: Record<AutopilotView["phase"], string> = {
-  preparing: "Preparing the container and checking the base",
-  running: "Building",
-  interrupted: "Interrupted: its runner is not running",
-  ended: "Ended",
-};
-
-const STAGE: Record<CaseStage, string> = {
-  pending: "waiting",
-  running: "working",
-  repairing: "repairing",
-  accepted: "verified",
-  blocked: "blocked",
-  abandoned: "abandoned",
-  skipped: "skipped",
-};
-
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-
-const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 const ACTIVE_STATUSES = ["running", "waiting_for_capacity", "reviewing"];
 
@@ -48,10 +32,11 @@ export function AutopilotPanel({
   selected: NonNullable<AppStateView["snapshot"]>;
   run: Run;
 }) {
-  const [pending, setPending] = useState("");
+  const { pending, act } = usePendingAction(run);
   const [starting, setStarting] = useState(false);
   const [merging, setMerging] = useState(false);
-  const pendingRef = useRef(false);
+  const [dropping, setDropping] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
   const view = state.autopilot;
   const project = selected.project;
   const tasks = selected.pendingBoard?.tasks ?? selected.tasks;
@@ -64,81 +49,26 @@ export function AutopilotPanel({
     (!view || view.phase === "ended");
   if (!view && !offer) return null;
 
-  async function act(label: string, work: () => Promise<unknown>) {
-    if (pendingRef.current) return;
-    pendingRef.current = true;
-    setPending(label);
-    try {
-      await run(work);
-    } finally {
-      pendingRef.current = false;
-      setPending("");
-    }
-  }
   const disabled = Boolean(pending);
   const live = view && (view.phase === "preparing" || view.phase === "running");
   const verified = view?.cases.filter((item) => item.stage === "accepted").length ?? 0;
+  // Verdicts live on the approved plan the run built, not on a revision still pending.
+  const builtPlan = selected.plan;
 
   return (
     <section className="decision-dock autopilot-dock" aria-label="Autopilot">
-      <div className="dock-block" aria-live="polite" aria-busy={disabled}>
+      <div className="dock-block" aria-busy={disabled}>
         {view ? (
-          <>
-            <div className="dock-status">
-              <strong>
-                Autopilot ·{" "}
-                {view.phase === "ended"
-                  ? capitalised(view.outcomeLabel ?? PHASE.ended)
-                  : PHASE[view.phase]}
-                {view.stopRequested && view.phase !== "ended"
-                  ? view.stopRequested === "now"
-                    ? " · stopping now"
-                    : " · stopping after this task"
-                  : ""}
-              </strong>
-              <span className="hint">
-                {autopilotProgressLine(
-                  view.cases.map((item) => item.stage),
-                  "",
-                )}{" "}
-                Verified means the checks passed; nothing is reviewed. The work is on branch{" "}
-                <code>{view.branch}</code>; nothing is applied to your folder.
-              </span>
-            </div>
-            {view.goal ? (
-              <p className="hint autopilot-milestones">
-                Planner {view.goal.planner}
-                {view.goal.advisory ? " (advising only)" : ""} ·{" "}
-                {view.milestones?.length
-                  ? view.milestones
-                      .map(
-                        (item) =>
-                          `${item.id} ${item.stage === "done" ? (item.gaps?.length ? `done, gaps ${item.gaps.join(", ")}` : "verified") : item.reviews ? `review ${item.reviews}` : "planned"}`,
-                      )
-                      .join(" · ")
-                  : "first milestone under way"}
-              </p>
-            ) : null}
-            {view.endReason && view.outcome !== "objective_met" ? (
-              <p className="hint">{view.endReason}</p>
-            ) : null}
-            <details className="autopilot-details">
-              <summary>Progress</summary>
-              <ul className="autopilot-lines">
-                {view.lines.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-              <ol className="autopilot-cases">
-                {view.cases.map((item) => (
-                  <li key={item.id} data-stage={item.stage}>
-                    <span className="autopilot-stage">{STAGE[item.stage]}</span> {item.title}
-                    {item.reason ? <span className="hint"> — {item.reason}</span> : null}
-                  </li>
-                ))}
-              </ol>
-            </details>
-          </>
+          <AutopilotRunCard
+            card={autopilotCard(
+              view,
+              builtPlan?.requirements ?? [],
+              new Date(),
+              selected.managerUsd,
+              state.weekUsd,
+            )}
+            details={<RunDetails details={autopilotDetails(view)} />}
+          />
         ) : (
           <div className="dock-status">
             <strong>Build with Autopilot</strong>
@@ -165,9 +95,7 @@ export function AutopilotPanel({
               {view ? "Build again…" : "Build with Autopilot…"}
             </button>
           ) : null}
-          {view &&
-          (view.phase === "interrupted" ||
-            (view.phase === "ended" && view.outcome !== "objective_met")) ? (
+          {autopilotResumable(view) ? (
             <button
               type="button"
               className="primary"
@@ -190,7 +118,13 @@ export function AutopilotPanel({
                   )
                 }
               >
-                Stop after this task
+                {view?.stopRequested ? "Stop asked for" : "Stop after this task"}
+              </button>
+              <button
+                type="button"
+                onClick={() => document.getElementById("composer-input")?.focus()}
+              >
+                Message Autopilot
               </button>
               <button
                 type="button"
@@ -233,7 +167,12 @@ export function AutopilotPanel({
             </button>
           ) : null}
           {view?.phase === "ended" && verified > 0 ? (
-            <button type="button" disabled={disabled} onClick={() => setMerging(true)}>
+            <button
+              type="button"
+              className={view.outcome === "objective_met" ? "primary" : undefined}
+              disabled={disabled}
+              onClick={() => setMerging(true)}
+            >
               Merge into folder…
             </button>
           ) : null}
@@ -249,8 +188,49 @@ export function AutopilotPanel({
               Open report
             </button>
           ) : null}
+          {view &&
+          !view.dropped &&
+          view.workingCopy &&
+          (view.phase === "ended" || view.phase === "interrupted") ? (
+            <button
+              type="button"
+              className="danger quiet"
+              disabled={disabled}
+              onClick={() => setDropping(true)}
+            >
+              Drop run…
+            </button>
+          ) : null}
+          {view && !live ? (
+            <button
+              type="button"
+              className="quiet"
+              disabled={disabled}
+              onClick={() => setCleaning(true)}
+            >
+              Clean up runs…
+            </button>
+          ) : null}
         </div>
       </div>
+      {dropping ? (
+        <AutopilotDropDialog
+          onClose={() => setDropping(false)}
+          onDrop={() =>
+            act("Dropping the Autopilot run…", () => window.poundlockDispatch.autopilotDrop())
+          }
+        />
+      ) : null}
+      {cleaning ? (
+        <AutopilotCleanupDialog
+          onClose={() => setCleaning(false)}
+          onCleanup={(runIds) =>
+            act("Removing the runs' working copies…", () =>
+              window.poundlockDispatch.autopilotCleanup(runIds),
+            )
+          }
+        />
+      ) : null}
       {merging ? (
         <AutopilotMergeDialog
           onClose={() => setMerging(false)}
@@ -263,9 +243,7 @@ export function AutopilotPanel({
       ) : null}
       {starting ? (
         <AutopilotStartDialog
-          defaultImage={view?.image ?? ""}
-          approve={!selected.plan?.approved || Boolean(selected.pendingBoard)}
-          goal={goalPreview(state, selected)}
+          preview={autopilotStartPreview(state, selected)}
           onClose={() => setStarting(false)}
           onSubmit={(options) =>
             act("Starting Autopilot: checking the image and the VM…", () =>
@@ -278,46 +256,12 @@ export function AutopilotPanel({
   );
 }
 
-/** For a plan with milestones: how many, and the Planner the run would use. */
-interface GoalPreview {
-  milestones: number;
-  planner?: { name: string; advisory: boolean; external: boolean; destination: string };
-}
-
-function goalPreview(
-  state: AppStateView,
-  selected: NonNullable<AppStateView["snapshot"]>,
-): GoalPreview | undefined {
-  const plan = selected.pendingBoard?.plan ?? selected.plan;
-  if (!plan?.milestones?.length) return undefined;
-  const models = state.probe?.interactiveModels ?? [];
-  const find = (id?: string) =>
-    id ? models.find((model) => model.profileId === id || model.id === id) : undefined;
-  const worker = find(state.connection.roles.interactive?.profileId);
-  const verifier = find(state.connection.roles.verifier?.profileId);
-  if (!worker && !verifier) return { milestones: plan.milestones.length };
-  const choice = autopilotPlannerFor(verifier, (verifier ?? worker)!);
-  return {
-    milestones: plan.milestones.length,
-    planner: {
-      name: choice.model.id,
-      advisory: choice.advisory,
-      external: choice.external,
-      destination: choice.model.dataDestination ?? "unknown",
-    },
-  };
-}
-
 function AutopilotStartDialog({
-  defaultImage,
-  approve,
-  goal,
+  preview: { defaultImage, approve, goal, suggestedChecks, defaultHours },
   onClose,
   onSubmit,
 }: {
-  defaultImage: string;
-  approve: boolean;
-  goal?: GoalPreview;
+  preview: AutopilotStartPreview;
   onClose: () => void;
   onSubmit: (options: {
     image: string;
@@ -325,16 +269,18 @@ function AutopilotStartDialog({
     allowDependencyDownloads: boolean;
     acceptAlreadyMet: boolean;
     prepare: string[];
+    checks?: string[];
     checkpoint?: "notify" | "wait";
     allowPlannerDestination?: string;
     plannerSpendCapUsd?: number;
   }) => Promise<unknown>;
 }) {
   const [image, setImage] = useState(defaultImage);
-  const [hours, setHours] = useState(goal ? String(DEFAULT_AUTO_LIMITS.softHours) : "6");
+  const [hours, setHours] = useState(String(defaultHours));
   const [downloads, setDownloads] = useState(false);
   const [alreadyMet, setAlreadyMet] = useState(false);
   const [prepare, setPrepare] = useState("");
+  const [checks, setChecks] = useState((suggestedChecks ?? []).join("\n"));
   const [checkpoint, setCheckpoint] = useState<"notify" | "wait">("notify");
   const [agreed, setAgreed] = useState(false);
   const [cap, setCap] = useState("5");
@@ -342,8 +288,14 @@ function AutopilotStartDialog({
   const parsedHours = Number(hours);
   const needsAgreement = Boolean(goal?.planner?.external);
   const parsedCap = Number(cap);
+  const lines = (text: string) =>
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
   const valid =
     image.trim() &&
+    (!suggestedChecks || lines(checks).length > 0) &&
     Number.isFinite(parsedHours) &&
     parsedHours > 0 &&
     (!needsAgreement || (agreed && Number.isFinite(parsedCap) && parsedCap > 0));
@@ -369,10 +321,8 @@ function AutopilotStartDialog({
             hours: parsedHours,
             allowDependencyDownloads: downloads,
             acceptAlreadyMet: alreadyMet,
-            prepare: prepare
-              .split("\n")
-              .map((line) => line.trim())
-              .filter(Boolean),
+            prepare: lines(prepare),
+            ...(suggestedChecks ? { checks: lines(checks) } : {}),
             ...(goal ? { checkpoint } : {}),
             ...(needsAgreement && goal?.planner
               ? { allowPlannerDestination: goal.planner.destination, plannerSpendCapUsd: parsedCap }
@@ -400,6 +350,21 @@ function AutopilotStartDialog({
           value={hours}
           onChange={(event) => setHours(event.target.value)}
         />
+        {suggestedChecks ? (
+          <>
+            <label htmlFor="autopilot-checks">Checks (one per line)</label>
+            <textarea
+              id="autopilot-checks"
+              value={checks}
+              placeholder="cargo test --release"
+              onChange={(event) => setChecks(event.target.value)}
+            />
+            <p className="hint">
+              Every task must pass these. They become the project's checks
+              {suggestedChecks.length ? "; the manager suggested them with the plan" : ""}.
+            </p>
+          </>
+        ) : null}
         <label htmlFor="autopilot-prepare">Setup commands (one per line, optional)</label>
         <textarea
           id="autopilot-prepare"
@@ -557,5 +522,32 @@ function AutopilotMergeDialog({
         </button>
       </div>
     </Dialog>
+  );
+}
+
+function RunDetails({ details }: { details: AutopilotDetails }) {
+  return (
+    <>
+      <p className="hint">
+        {details.stopping ? `${details.stopping} ` : ""}
+        {VERIFIED_LEAD}
+        <code>{details.branch}</code>
+        {VERIFIED_TAIL}
+        {details.planner ? ` ${details.planner}` : ""}
+      </p>
+      <ul className="autopilot-lines">
+        {details.lines.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      <ol className="autopilot-cases">
+        {details.cases.map((item) => (
+          <li key={item.id} data-stage={item.stage}>
+            <span className="autopilot-stage">{item.label}</span> {item.title}
+            {item.reason ? <span className="hint"> — {item.reason}</span> : null}
+          </li>
+        ))}
+      </ol>
+    </>
   );
 }

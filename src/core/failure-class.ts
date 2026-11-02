@@ -86,14 +86,6 @@ export function classifyAttemptFailure(input: {
   return "work";
 }
 
-export function consumesRepairBudget(failure: FailureClass): boolean {
-  return failure === "work";
-}
-
-export function consumesEscalationBudget(failure: FailureClass): boolean {
-  return failure === "work";
-}
-
 export function isInterruptAttempt(attempt: { status?: string; error?: string }): boolean {
   if (attempt.status === "paused") return true;
   if (isAttemptTimeLimit(attempt)) return true;

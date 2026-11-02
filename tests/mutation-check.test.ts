@@ -1,7 +1,6 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import {
   addedLines,
   applyMutant,
@@ -14,6 +13,7 @@ import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { hostCommandPort } from "@runtime/host-command";
 import { describe, expect, it } from "vitest";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 const patch = [
@@ -54,16 +54,19 @@ describe("choosing mutants", () => {
     expect(mutantsFromPatch(patch, 1)).toHaveLength(1);
   });
 
-  it("never mutates build output a check rebuilds", () => {
-    const bundle = [
-      "diff --git a/dist/client/assets/index.js b/dist/client/assets/index.js",
-      "--- a/dist/client/assets/index.js",
-      "+++ b/dist/client/assets/index.js",
-      "@@ -0,0 +1 @@",
-      "+if (a >= b) { focus(); }",
-    ].join("\n");
-    expect(mutantsFromPatch(bundle)).toEqual([]);
-  });
+  it.each(["dist/client/assets/index.js", ".svelte-kit/adapter-node/entries/env.js"])(
+    "never mutates build output a check rebuilds: %s",
+    (path) => {
+      const bundle = [
+        `diff --git a/${path} b/${path}`,
+        `--- a/${path}`,
+        `+++ b/${path}`,
+        "@@ -0,0 +1 @@",
+        "+if (a >= b) { focus(); }",
+      ].join("\n");
+      expect(mutantsFromPatch(bundle)).toEqual([]);
+    },
+  );
 
   it("applies a mutant only where its line still is, or is unique", () => {
     const [mutant] = mutantsFromPatch(patch);
@@ -117,6 +120,7 @@ describe("the mutation check at acceptance", () => {
     await store.saveProject(project);
     const source = "export function picks(key) {\n  return key === 'p';\n}\n";
     const verified: string[] = [];
+    const stops: Array<boolean | undefined> = [];
     const replies: string[] = [];
     const orchestrator = new ProjectOrchestrator({
       hostCommands: hostCommandPort,
@@ -143,6 +147,7 @@ describe("the mutation check at acceptance", () => {
         async verify(ctx) {
           const now = await readFile(join(ctx.cwd, "keys.js"), "utf8");
           verified.push(now);
+          stops.push(ctx.stopOnFailure);
           const broken = now.includes("!==");
           return options.testCatches && broken
             ? {
@@ -186,12 +191,14 @@ describe("the mutation check at acceptance", () => {
     await orchestrator.waitForLocal(project.id);
     await orchestrator.tick(project.id);
     const [task] = await store.getTasks(project.id);
-    return { task, verified, replies, folder, source, store, project, orchestrator };
+    return { task, verified, stops, replies, folder, source, store, project, orchestrator };
   }
 
   it("accepts work whose checks catch a break, and leaves the code as the worker wrote it", async () => {
-    const { task, verified, replies, folder, source } = await run({ testCatches: true });
+    const { task, verified, stops, replies, folder, source } = await run({ testCatches: true });
     expect(verified).toEqual(["export function picks(key) {\n  return key !== 'p';\n}\n"]);
+    // A mutant is caught at its first failing check: the rest need not run.
+    expect(stops).toEqual([true]);
     expect(task.status).toBe("applied");
     expect(task.attempts.at(-1)?.mutation?.mutants).toEqual([
       { path: "keys.js", line: 2, change: "`===` → `!==`", caught: true },

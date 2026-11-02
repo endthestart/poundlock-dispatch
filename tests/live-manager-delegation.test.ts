@@ -58,7 +58,10 @@ run.each([
         async () =>
           "Report from worker (read-only): the diff changes one line in app.py; no defects found.",
       ),
-      proposePlan: vi.fn(async () => "Plan recorded. Wait for approval."),
+      proposePlan: vi.fn(async () => ({
+        text: "Plan recorded. Wait for approval.",
+        revise: false,
+      })),
       askUser: vi.fn(async () => "Waiting for the user."),
     } as unknown as ManagerToolHost;
     try {

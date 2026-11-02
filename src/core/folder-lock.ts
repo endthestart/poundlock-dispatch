@@ -12,9 +12,9 @@
  * makes watching a terminal session from the desktop app a feature rather than
  * a collision.
  *
- * The lock is advisory and deliberately small: a file created with `wx`, a
- * heartbeat written by the caller's existing poll, and a holder that is only
- * displaced when it is both silent *and* gone.
+ * The lock is advisory and deliberately small: a file created with `wx`, and a
+ * holder that is displaced once its process is gone. The locks are this
+ * machine's, so nothing needs a heartbeat written to disk (30 Oct).
  */
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -22,15 +22,11 @@ import { basename, dirname, join } from "node:path";
 import { writeJsonAtomic } from "./atomic-write.js";
 import { sha256Text } from "./ids.js";
 
-/** Silent for this long *and* no such process before a lock can be taken over. */
-export const STALE_AFTER_MS = 30_000;
-
 export interface FolderLockHolder {
   pid: number;
   /** Which front end holds it, so the other can name it: "gui", "tui". */
   hostApp: string;
   startedAt: string;
-  heartbeatAt: string;
   dataRoot: string;
   projectId?: string;
   workflowId?: string;
@@ -41,6 +37,11 @@ export interface FolderLockPort {
   holds(folder: string): boolean;
   /** Who holds `folder`, when it is not this process. */
   heldBy(folder: string): Promise<FolderLockHolder | undefined>;
+  /** Claim `folders` as one unit, or say who holds the first one refused. */
+  acquireAll(
+    folders: string[],
+    binding?: { projectId?: string; workflowId?: string },
+  ): Promise<{ ok: true } | { ok: false; folder: string; holder: FolderLockHolder | undefined }>;
 }
 
 /**
@@ -108,12 +109,14 @@ export class FolderLock implements FolderLockPort {
     }
   }
 
-  /** A holder that stopped heartbeating *and* no longer exists. Both, so a paused debugger keeps its lock. */
+  /**
+   * A holder whose process is gone. The locks are this machine's, so a dead pid
+   * settles it: a client opened just after another crashed watched nobody for 30 s
+   * more (UX review, 30 Oct). A live process keeps its lock however quiet it is, as
+   * one paused in a debugger.
+   */
   private expired(holder: FolderLockHolder): boolean {
-    const silent =
-      this.now().getTime() - new Date(holder.heartbeatAt).getTime() > STALE_AFTER_MS ||
-      Number.isNaN(new Date(holder.heartbeatAt).getTime());
-    return silent && !alive(holder.pid);
+    return !alive(holder.pid);
   }
 
   /**
@@ -138,7 +141,6 @@ export class FolderLock implements FolderLockPort {
       hostApp: this.identity.hostApp,
       dataRoot: this.identity.dataRoot,
       startedAt: this.now().toISOString(),
-      heartbeatAt: this.now().toISOString(),
       ...binding,
     };
     const body = `${JSON.stringify(holder, null, 2)}\n`;
@@ -193,15 +195,6 @@ export class FolderLock implements FolderLockPort {
     if (this.held.has(canonical)) return undefined;
     const holder = await this.read(canonical);
     return holder && !this.expired(holder) ? holder : undefined;
-  }
-
-  /** Renew this process's claim. Called from the caller's existing poll, not a timer of its own. */
-  async heartbeat(): Promise<void> {
-    for (const [folder, holder] of this.held) {
-      const next = { ...holder, heartbeatAt: this.now().toISOString() };
-      this.held.set(folder, next);
-      await writeJsonAtomic(this.path(folder), next, 0o600).catch(() => undefined);
-    }
   }
 
   async release(folder: string): Promise<void> {

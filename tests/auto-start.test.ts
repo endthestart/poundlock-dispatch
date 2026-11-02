@@ -2,6 +2,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { dropRun } from "@core/auto/control";
 import { AutoLedger } from "@core/auto/ledger";
 import {
   AutoPaths,
@@ -22,6 +23,7 @@ import {
   planFromProject,
   startAutoRun,
 } from "@core/auto/start";
+import { startAutopilot } from "@core/host/autopilot";
 import type { FileStore } from "@core/store";
 import type { ProjectRecord } from "@shared/types";
 import { afterAll, describe, expect, it } from "vitest";
@@ -109,6 +111,18 @@ describe("auto start", () => {
     expect(git(env.source, "branch", "--format=%(refname:short)")).toBe("main");
   });
 
+  it("skips the base checks only of a repository with nothing to check yet", async () => {
+    const empty = await setup();
+    const started = await startAutoRun(empty.request, empty.deps);
+    expect(started.run.goal).toBeUndefined();
+    expect(started.run.greenfield).toBe(true);
+    const code = await setup();
+    await writeFile(join(code.source, "main.rs"), "fn main() {}\n");
+    git(code.source, "add", "-A");
+    git(code.source, "commit", "-q", "-m", "code");
+    expect((await startAutoRun(code.request, code.deps)).run.greenfield).toBeUndefined();
+  });
+
   it("refuses a folder that is not a repository's top, or has uncommitted tracked changes", async () => {
     const env = await setup();
     const plain = await tempDir("auto-plain-");
@@ -130,7 +144,7 @@ describe("auto start", () => {
     );
     await expect(
       startAutoRun({ ...env.request, plan: { ...plan, checks: [] } }, env.deps),
-    ).rejects.toThrow(/needs the plan's checks/);
+    ).rejects.toThrow(/Autopilot needs checks/);
     await expect(
       startAutoRun(env.request, {
         ...env.deps,
@@ -228,6 +242,63 @@ describe("auto start", () => {
     await expect(planFromProject({ project, store: store(false) })).rejects.toThrow(
       /no approved plan/,
     );
+  });
+
+  it("runs a plan without milestones as one, without rewriting the manager's plan", async () => {
+    const plan = {
+      approved: true,
+      summary: "Stack star frames",
+      verificationCommands: ["cargo test"],
+      requirements: [{ id: "R1" }, { id: "R2" }],
+    };
+    const tasks = [
+      { id: "T1", title: "a", objective: "do a", status: "ready", dependsOn: [], attempts: [] },
+    ];
+    const store = {
+      layout: { root: "/data" },
+      getPlan: async () => structuredClone(plan),
+      getTasks: async () => structuredClone(tasks),
+      savePlan: async () => {
+        throw new Error("the plan is the manager's: Autopilot must not save it");
+      },
+      saveTasks: async () => {
+        throw new Error("the board is the manager's: Autopilot must not save it");
+      },
+    } as unknown as FileStore;
+    const project = { id: "p1", policy: {} } as ProjectRecord;
+    expect((await planFromProject({ project, store })).milestones).toBe(true);
+  });
+
+  it("starts with the checks the owner confirmed and keeps them as the project's", async () => {
+    const env = await setup();
+    let project = {
+      id: "p1",
+      source: { kind: "local_folder", originalPath: env.source },
+      policy: { verification: { commands: [] as string[], protectedPaths: [] } },
+    } as unknown as ProjectRecord;
+    const task = { id: "T1", title: "t", objective: "o", acceptanceCriteria: "a", dependsOn: [] };
+    const store = {
+      layout: { root: env.data },
+      getConnection: async () => ({
+        ...(await env.deps.connection()),
+        roles: { interactive: { profileId: "gate-model", profileName: "gate-model" } },
+      }),
+      // The manager's suggestion is not a check until the owner confirms it.
+      getPlan: async () => ({ approved: true, summary: "s", suggestedChecks: ["cargo test"] }),
+      getTasks: async () => [{ ...task, status: "ready", attempts: [] }],
+      getProject: async () => structuredClone(project),
+      saveProject: async (saved: ProjectRecord) => void (project = saved),
+    } as unknown as FileStore;
+    const facilities = { ...env.deps, checkRunner: async () => undefined };
+    await expect(
+      startAutopilot(facilities, store, project, { image: "toolchain:test" }),
+    ).rejects.toThrow(/Autopilot needs checks/);
+    const { runId } = await startAutopilot(facilities, store, project, {
+      image: "toolchain:test",
+      checks: [" cargo test ", ""],
+    });
+    expect((await readRunFile(env.paths.runDir(runId))).checks).toEqual(["cargo test"]);
+    expect(project.policy.verification.commands).toEqual(["cargo test"]);
   });
 
   it("derives the hard limit from the requested soft limit and case time", () => {
@@ -355,7 +426,7 @@ describe("auto runs on disk", () => {
     await ledger.append({
       type: "run_started",
       runId: run.runId,
-      cases: ["T1", "T2", "T3"].map((id) => ({
+      cases: ["T1", "T2", "T3", "T5", "T6"].map((id) => ({
         id,
         title: id,
         objective: "o",
@@ -385,6 +456,18 @@ describe("auto runs on disk", () => {
       });
       await ledger.append({ type: "case_accepted", caseId });
     }
+    // T5 ended before a review, which planned its work; T6 found its work already there.
+    await ledger.append({ type: "case_started", caseId: "T5" });
+    await ledger.append({ type: "case_abandoned", caseId: "T5", reason: "case allowance used" });
+    await ledger.append({
+      type: "milestone_review",
+      milestoneId: "M1",
+      complete: false,
+      verdicts: [],
+      tasks: [],
+    });
+    await ledger.append({ type: "case_started", caseId: "T6" });
+    await ledger.append({ type: "case_abandoned", caseId: "T6", reason: "no changes" });
     await ledger.append({ type: "case_started", caseId: "T3" });
     await ledger.append({ type: "case_blocked", caseId: "T3", reason: "no threads left" });
     await endRunWithoutRunner(
@@ -393,6 +476,12 @@ describe("auto runs on disk", () => {
       { outcome: "blocked_for_input", reason: "M1 has gaps" },
       { docker: env.docker.docker, env: env.docker.env },
     );
+    // T2's verified work is not in the folder: a start refuses until the run is dropped (or merged).
+    await expect(startAutoRun(env.request, env.deps)).rejects.toThrow(
+      `Run ${run.runId} has verified work the folder does not have (1 task)`,
+    );
+    const isolation = { docker: env.docker.docker, env: env.docker.env };
+    await dropRun(env.paths, runDir, isolation, new Date(Date.now() + 60_000));
     const task = (id: string) => ({
       id,
       title: id,
@@ -427,7 +516,8 @@ describe("auto runs on disk", () => {
     );
     expect(tasks.map((t) => t.status)).toEqual(["applied", "ready", "ready", "ready"]);
     expect(next.run.cases.map((c) => c.id)).toEqual(["T2", "T4"]);
-    expect(next.run.leftOut).toEqual(["T3"]);
+    expect(next.run.leftOut).toEqual(["T3", "T5", "T6"]);
+    expect(next.run.carriedOver).toEqual(["T3 (blocked: no threads left)"]);
   });
 
   it("records a run that never began as ended, so its folder is not left locked", async () => {

@@ -4,12 +4,12 @@ import {
   type CapabilityName,
   type CapabilitySettingsMatch,
   type ConnectionProbe,
+  grantPermissionHint,
   type InteractiveModel,
   JOB_PERMISSIONS,
   type JobOptions,
   type JobResultView,
   type PatchView,
-  permissionLabel,
   REASONING_LEVELS,
   REQUIRED_PERMISSIONS,
   type VerificationView,
@@ -18,6 +18,9 @@ import { sha256Text } from "./ids.js";
 
 /** Empty IDs, names and aliases cannot resolve to a supported Poundlock profile. */
 export const INFERENCE_PERMISSION_PROBE_MODEL = "";
+
+/** Access preflight reasons Poundlock gives before it looks at the external permission. */
+const CHECKED_BEFORE_EXTERNAL = new Set(["model_disabled", "inference_permission_required"]);
 
 import type { SubmitJobInput } from "@shared/job-contract";
 
@@ -93,10 +96,10 @@ export class PoundlockClient implements PoundlockApi {
 
   async probe(): Promise<ConnectionProbe> {
     const url = this.baseUrl;
-    const missingHint = (missing: string[]) =>
-      missing.length
-        ? `This token is missing: ${missing.map(permissionLabel).join(", ")}. Tick those boxes on an application token in Poundlock Access.`
-        : undefined;
+    const missingHint = (
+      missing: string[],
+      capabilities?: import("@shared/types").PoundlockCapabilitiesView,
+    ) => (missing.length ? grantPermissionHint(missing, capabilities) : undefined);
 
     try {
       const ready = await this.fetchImpl(`${url}/readyz`, { signal: AbortSignal.timeout(8_000) });
@@ -180,14 +183,26 @@ export class PoundlockClient implements PoundlockApi {
           };
       } catch (error) {
         if (!isAuthFailure(error)) return failFromError(url, error);
+        // Any token may read capabilities, so one without models:read still
+        // learns what its missing permissions are called.
+        capabilities ??= await this.capabilities().catch(() => undefined);
       }
 
-      if (options.role !== "operator") {
+      // A controller that says what this token holds is believed; an older one
+      // is asked model by model.
+      if (Array.isArray(capabilities?.caller_permissions)) {
+        for (const permission of capabilities.caller_permissions) granted.add(permission);
+      } else if (options.role !== "operator") {
         try {
           if (await this.inferencePermissionGranted()) granted.add("inference:invoke");
         } catch (error) {
           return failFromError(url, error);
         }
+        const external = interactiveModels
+          .filter((model) => model.dataDestination === "external")
+          .map((model) => model.profileId ?? model.id);
+        if (!granted.has("external:invoke") && (await this.externalPermissionGranted(external)))
+          granted.add("external:invoke");
       }
 
       const missingPermissions = REQUIRED_PERMISSIONS.filter(
@@ -212,7 +227,7 @@ export class PoundlockClient implements PoundlockApi {
           missingPermissions.length > 0
             ? "The token connected, but it cannot run the Project Manager workflow."
             : undefined,
-        hint: missingHint(missingPermissions),
+        hint: missingHint(missingPermissions, capabilities),
       };
     } catch (error) {
       return failFromError(url, error);
@@ -264,6 +279,29 @@ export class PoundlockClient implements PoundlockApi {
 
   async usage(): Promise<import("@shared/types").ManagedIdentityUsageResponse> {
     return this.request("GET", "/api/v1/usage");
+  }
+
+  /**
+   * Job options name a token's permissions only when it has a job permission. Without
+   * one, an external model's access preflight says whether it may call out: Poundlock
+   * answers external_permission_required before preparing anything when it may not.
+   * A least-privilege token read as not allowed out (parity sandbox, 28 Oct).
+   */
+  private async externalPermissionGranted(models: string[]): Promise<boolean> {
+    for (const model of models.slice(0, 5)) {
+      const body = await this.request<{ blocked_reason?: string }>(
+        "POST",
+        "/api/v1/access/preflight",
+        { model, operation: "inference" },
+      ).catch(() => undefined);
+      if (!body) continue;
+      if (body.blocked_reason === "external_permission_required") return false;
+      // Poundlock checks a disabled model and the inference permission before the
+      // external one, so those answers say nothing about it.
+      if (body.blocked_reason && CHECKED_BEFORE_EXTERNAL.has(body.blocked_reason)) continue;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -620,8 +658,7 @@ async function errorFromResponse(response: Response): Promise<PoundlockError> {
     hint =
       "This profile’s destination is unknown. Confirm operator network or external in Settings → Models before sending project context.";
   } else if (response.status === 403 && /external/.test(code ?? message)) {
-    hint =
-      "External profiles require an application token with Call external providers. Create a replacement token in Poundlock Access.";
+    hint = `External profiles need a permission this application token lacks. ${grantPermissionHint(["external:invoke"])}`;
   } else if (response.status === 409 && code === "capacity_in_use") {
     hint =
       "The assigned model is busy. Poundlock Dispatch will wait and retry the same request instead of starting another overlapping request.";

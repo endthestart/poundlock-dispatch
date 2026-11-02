@@ -6,7 +6,6 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import type { ManagerToolHost } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { createPiManager } from "@runtime/pi-manager";
@@ -115,6 +114,3 @@ export async function withManager(
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
-
-/** A tool host for a turn that calls no tool. */
-export const noTools = {} as ManagerToolHost;

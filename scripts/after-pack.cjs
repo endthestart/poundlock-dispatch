@@ -8,14 +8,21 @@ module.exports = async function afterPack(context) {
   const electron = dirname(require.resolve("electron/package.json"));
   const expected = require("electron/package.json").version;
   const dist = join(electron, "dist");
-  const version = existsSync(join(dist, "version")) ? readFileSync(join(dist, "version"), "utf8").trim() : "";
+  const version = existsSync(join(dist, "version"))
+    ? readFileSync(join(dist, "version"), "utf8").trim()
+    : "";
   if (version !== expected)
     throw new Error(
       `node_modules/electron/dist is ${version || "missing"}, not Electron ${expected}: run \`node node_modules/electron/install.js\``,
     );
   const resources =
     context.electronPlatformName === "darwin"
-      ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, "Contents", "Resources")
+      ? join(
+          context.appOutDir,
+          `${context.packager.appInfo.productFilename}.app`,
+          "Contents",
+          "Resources",
+        )
       : context.appOutDir;
   copyFileSync(join(dist, "LICENSE"), join(resources, "LICENSE.electron.txt"));
   copyFileSync(join(dist, "LICENSES.chromium.html"), join(resources, "LICENSES.chromium.html"));

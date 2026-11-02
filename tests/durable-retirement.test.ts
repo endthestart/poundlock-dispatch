@@ -230,7 +230,7 @@ describe("a project saved while Poundlock jobs were routed automatically", () =>
     ]);
     // Applied to the review workspace (head moved) and never copied back.
     project.source.baseRevision = "rev-0";
-    project.integration.headRevision = "rev-1";
+    (project.integration as { headRevision?: string }).headRevision = "rev-1";
     await f.store.saveProject(project);
 
     await retireDurableWork(f.store, f.project.id);

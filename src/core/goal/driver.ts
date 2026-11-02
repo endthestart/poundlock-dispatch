@@ -8,7 +8,8 @@
 import { casesFromTasks } from "@core/auto/cases";
 import type { Ending, IdleAnswer } from "@core/auto/engine";
 import type { AutoLedger } from "@core/auto/ledger";
-import { type AutoRunState, unfinishedLine } from "@shared/auto-run";
+import { type AutoRunState, endedWithoutWorkSince, unfinishedLine } from "@shared/auto-run";
+import { goalMilestones, inGoalMilestone } from "@shared/milestones";
 import type { Milestone, PlanRecord, TaskRecord } from "@shared/types";
 import type {
   FrozenAllowance,
@@ -17,6 +18,7 @@ import type {
   PlannerSpec,
   RequirementVerdict,
 } from "./planner-prompts";
+import { type ReferencePacket, referencesFor } from "./research";
 
 /** The Planner, as the driver needs it (`runtime/planner.ts`). */
 export interface PlannerPort {
@@ -55,7 +57,8 @@ export interface GoalBoard {
   addTasks(
     planned: PlannedTask[],
     milestone: Milestone,
-    options?: { frozenChanges?: boolean },
+    /** The Planner's verdicts count: keep its acceptance tests and frozen-test changes. */
+    options?: { gates?: boolean },
   ): Promise<TaskRecord[]>;
   /** Record the Planner's verdicts on the ledger's requirements. */
   recordVerdicts(verdicts: RequirementVerdict[], advisory: boolean): Promise<void>;
@@ -82,6 +85,8 @@ export interface GoalDriverOptions {
   maxReviews?: number;
   /** The most the Planner may cost over the goal, by the catalog's estimate. */
   spendCapUsd?: number;
+  /** The run's reference packet, where a gating Planner with web search saves what it read. */
+  packet?: ReferencePacket;
   /** Waits between Planner calls that fail for want of Poundlock. */
   waitsMs?: number[];
   isUnavailable?: (error: unknown) => boolean;
@@ -102,16 +107,20 @@ export function plannerSpec(
   plan: PlanRecord,
   checks: string[],
   workerMinutes?: number,
-  frozenChanges = false,
+  /** The Planner's verdicts count: it writes acceptance tests and decides on frozen ones. */
+  gates = false,
+  /** It may save what it read on the web as the run's reference packet. */
+  research = false,
 ): PlannerSpec {
   return {
     ...(workerMinutes ? { workerMinutes } : {}),
-    ...(frozenChanges ? { frozenChanges } : {}),
+    ...(gates ? { frozenChanges: true, acceptanceFirst: true } : {}),
+    ...(gates && research ? { research: true } : {}),
     summary: plan.summary,
     architecture: plan.architecture,
     scopeOut: plan.scopeOut,
     checks,
-    milestones: plan.milestones ?? [],
+    milestones: goalMilestones(plan),
     requirements: plan.requirements ?? [],
   };
 }
@@ -173,10 +182,21 @@ export function goalDriver(
 ): (state: AutoRunState, signal: AbortSignal) => Promise<IdleAnswer> {
   const maxReviews = options.advisory ? 1 : (options.maxReviews ?? MAX_MILESTONE_REVIEWS);
   const ask = plannerCall(options);
+  // The answer's sources join the packet, and each task gets its reference material.
+  const referenced = async (answer: PlannerAnswer): Promise<PlannedTask[]> => {
+    const packet = options.packet;
+    if (!packet || options.advisory) return answer.tasks;
+    const ids = await packet.add(answer.sources ?? []);
+    const saved = await packet.all();
+    return answer.tasks.map((task) => {
+      const references = referencesFor(task, ids, saved);
+      return references.length ? { ...task, references } : task;
+    });
+  };
 
   const idle = async (state: AutoRunState, signal: AbortSignal): Promise<IdleAnswer> => {
     const plan = await options.board.plan();
-    const milestones = plan?.milestones ?? [];
+    const milestones = plan ? goalMilestones(plan) : [];
     const spent = state.plannerUsd ?? 0;
     if (options.spendCapUsd !== undefined && spent >= options.spendCapUsd)
       return {
@@ -189,8 +209,14 @@ export function goalDriver(
       };
     // A plan with no milestones is a single board: the run ends with its cases.
     if (!plan || !milestones.length) return { cases: [] };
-    // Only a Planner whose verdicts count may let a task change frozen tests.
-    const spec = plannerSpec(plan, options.checks, options.workerMinutes, !options.advisory);
+    // Only a Planner whose verdicts count writes acceptance tests or lets a task change frozen ones.
+    const spec = plannerSpec(
+      plan,
+      options.checks,
+      options.workerMinutes,
+      !options.advisory,
+      Boolean(options.packet),
+    );
     const progress = new Map((state.milestones ?? []).map((item) => [item.id, item]));
     const current = milestones.find(
       (item) => progress.get(item.id)?.stage !== "done" && !verifiedOnBoard(item, plan),
@@ -226,7 +252,7 @@ export function goalDriver(
       tasks.filter(
         (task) =>
           (task.status === "applied" || stage.get(task.id) === "accepted") &&
-          (!milestone || task.milestoneId === milestone),
+          (!milestone || inGoalMilestone(task, milestone, plan)),
       );
     const accepted = (milestone?: string) =>
       acceptedTasks(milestone).map((task) =>
@@ -237,7 +263,7 @@ export function goalDriver(
     const verified = (milestone: string) =>
       acceptedTasks(milestone).filter((task) => !takenOnWord.has(task.id)).length;
     const ownerNotes = (state.ownerMessages ?? []).map((message) => message.text);
-    const mine = tasks.filter((task) => task.milestoneId === current.id);
+    const mine = tasks.filter((task) => inGoalMilestone(task, current.id, plan));
     const seen = progress.get(current.id);
 
     // Not reached yet: plan it.
@@ -254,8 +280,8 @@ export function goalDriver(
           }),
         signal,
       );
-      const added = await options.board.addTasks(answer.tasks, current, {
-        frozenChanges: !options.advisory,
+      const added = await options.board.addTasks(await referenced(answer), current, {
+        gates: !options.advisory,
       });
       await options.ledger.append({
         type: "milestone_planned",
@@ -304,16 +330,7 @@ export function goalDriver(
       entries.findLast(
         ({ event }) => event.type === "milestone_review" && event.milestoneId === current.id,
       )?.seq ?? -1;
-    const endedSince = new Set(
-      entries.flatMap(({ seq, event }) =>
-        seq > lastReview &&
-        (event.type === "case_abandoned" ||
-          event.type === "case_blocked" ||
-          event.type === "case_skipped")
-          ? [event.caseId]
-          : [],
-      ),
-    );
+    const endedSince = endedWithoutWorkSince(entries, lastReview);
     const unfinished = [
       ...(!seen?.reviews && options.carriedOver?.length
         ? options.carriedOver.map((line) => `from the last run: ${line}`)
@@ -357,7 +374,9 @@ export function goalDriver(
     );
     await options.board.recordVerdicts(answer.verdicts, Boolean(options.advisory));
     const added = answer.tasks.length
-      ? await options.board.addTasks(answer.tasks, current, { frozenChanges: !options.advisory })
+      ? await options.board.addTasks(await referenced(answer), current, {
+          gates: !options.advisory,
+        })
       : [];
     await options.ledger.append({
       type: "milestone_review",
@@ -409,11 +428,12 @@ export function frozenDecider(
     const state = await options.ledger.state();
     if (options.spendCapUsd !== undefined && (state.plannerUsd ?? 0) >= options.spendCapUsd)
       return [];
+    if (!plan) return [];
     const progress = new Map((state.milestones ?? []).map((item) => [item.id, item]));
-    const current = plan?.milestones?.find(
+    const current = goalMilestones(plan).find(
       (item) => progress.get(item.id)?.stage !== "done" && !verifiedOnBoard(item, plan),
     );
-    if (!plan || !current) return [];
+    if (!current) return [];
     const spec = plannerSpec(plan, options.checks, options.workerMinutes, true);
     const answer = await ask(
       `deciding on ${input.tests.join(", ")}`,

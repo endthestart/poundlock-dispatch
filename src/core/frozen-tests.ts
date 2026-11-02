@@ -53,14 +53,6 @@ export function frozenTestsIn(frozen: FrozenTest[] | undefined): FrozenTest[] {
   return (frozen ?? []).filter((test) => freezable(test.path));
 }
 
-/** Frozen tests among the files an attempt reported changing. */
-export function frozenAmong(frozen: FrozenTest[], changedFiles: string[]): string[] {
-  const changed = new Set(changedFiles);
-  return frozen
-    .filter((test) => freezable(test.path) && changed.has(test.path))
-    .map((test) => test.path);
-}
-
 /**
  * Frozen tests whose content in `root` no longer matches, including deleted
  * ones. Used for interactive work, which edits the folder directly.

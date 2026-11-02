@@ -497,12 +497,6 @@ export class PythonUvAdapter implements EnvironmentAdapter {
     return [join(selection.virtualenv, process.platform === "win32" ? "Scripts" : "bin")];
   }
 
-  verificationProgram(selection: EnvironmentSelection): { program: string; prefixArgs: string[] } {
-    if (selection.python) return { program: selection.python, prefixArgs: [] };
-    if (selection.uv) return { program: selection.uv, prefixArgs: ["run"] };
-    return { program: "python3", prefixArgs: [] };
-  }
-
   rewriteInvocation(
     program: string,
     args: string[],

@@ -12,29 +12,11 @@ import type {
 } from "./types";
 import { resolveTaskRoute } from "./types";
 
-const LEGACY_LOOP_STOP = /repair budget exhausted|recovery budget exhausted/i;
-
 /** The same plain next steps for every stuck task; no internal budget terms. */
 const STUCK_NEXT_STEPS = (title: string) =>
   `Its edits are kept but not accepted. Retry task runs “${title}” again with a fresh set of attempts. Or tell the manager what to change so it can revise the plan, or use Project → Start a new run.`;
 
 /** Plain wording for a stop recorded by an older build, with the last real issue. */
-function legacyStopSentence(reason: string, task: TaskRecord): string {
-  const last = task.attempts.at(-1);
-  const failedCheck = last?.result?.verification?.commands?.find(
-    (command) => command.error || (command.exitCode ?? 0) !== 0,
-  );
-  const issue = last?.error
-    ? ` The last attempt ended with: ${last.error}`
-    : failedCheck
-      ? ` The last check, ${failedCheck.command}, failed (exit ${failedCheck.exitCode ?? "unknown"}).`
-      : "";
-  const why = /recovery budget/i.test(reason)
-    ? "stopped after it was interrupted too many times."
-    : "used all its fix rounds without passing review.";
-  return `“${task.title}” ${why}${issue}`;
-}
-
 /** A task whose worker is actively doing something right now. */
 export const IN_FLIGHT: TaskStatus[] = ["running", "queued", "repairing"];
 
@@ -473,23 +455,11 @@ export function projectStatusView(
   ) {
     // A stop recorded before a pause (for example Dispatch closing after a
     // budget ran out) still blocks Resume; say so instead of offering it.
-    // A pre-Phase-1 project stuck at a "budget exhausted" dead end (a failed
-    // task and that recorded stop) is rescued the same way a newly stuck task
-    // is: Retry task, not a prose dead end.
-    const legacyStuckTask = LEGACY_LOOP_STOP.test(project.budget.stopReason ?? "")
-      ? tasks.find((task) => task.status === "failed")
-      : undefined;
-    derived = legacyStuckTask
-      ? {
-          cause: "stuck_task",
-          title: "A task needs your direction",
-          next: `${legacyStopSentence(project.budget.stopReason ?? "", legacyStuckTask)} ${STUCK_NEXT_STEPS(legacyStuckTask.title)}`,
-        }
-      : {
-          cause: "failed",
-          title: "Work stopped",
-          next: `${project.budget.stopReason} Tell the manager how to proceed so it can propose a revised plan to approve, or use Project → Start a new run.`,
-        };
+    derived = {
+      cause: "failed",
+      title: "Work stopped",
+      next: `${project.budget.stopReason} Tell the manager how to proceed so it can propose a revised plan to approve, or use Project → Start a new run.`,
+    };
   } else if (project.status === "failed") {
     derived = {
       cause: "failed",
@@ -546,11 +516,20 @@ export function projectStatusView(
       next: "Progress and results appear under each task.",
     };
   } else if (approved) {
-    derived = {
-      cause: "ready_to_start",
-      title: "Approved work is ready",
-      next: "Resume the approved work when you are ready.",
-    };
+    // A milestone plan approved for Autopilot has no tasks until its Planner plans them,
+    // and offering Resume there named an action that was not on screen (UX review, 30 Oct).
+    const open = tasks.some((task) => !["applied", "cancelled"].includes(task.status));
+    derived = open
+      ? {
+          cause: "ready_to_start",
+          title: "Approved work is ready",
+          next: "Resume the approved work when you are ready.",
+        }
+      : {
+          cause: "ready_to_start",
+          title: "Plan approved",
+          next: "It has no tasks to do yet. Build it with Autopilot, or ask the manager to plan the next tasks.",
+        };
   } else {
     derived = {
       cause: "discussion",
@@ -560,12 +539,7 @@ export function projectStatusView(
   }
 
   const stuckTaskId =
-    derived.cause === "stuck_task"
-      ? (tasks.find((task) => task.stuck)?.id ??
-        (LEGACY_LOOP_STOP.test(project.budget.stopReason ?? "")
-          ? tasks.find((task) => task.status === "failed")?.id
-          : undefined))
-      : undefined;
+    derived.cause === "stuck_task" ? tasks.find((task) => task.stuck)?.id : undefined;
   const canApprove =
     !approvalPending &&
     proposalWaiting &&

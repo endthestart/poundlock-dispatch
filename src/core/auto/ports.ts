@@ -12,6 +12,12 @@ export interface CaseAttemptInput {
   repairFindings?: string;
   /** What earlier cases learned, carried forward briefly. */
   learnings: string[];
+  /** What the owner told the run so far, oldest first (ADR 016's inbox). */
+  ownerNotes: string[];
+  /** Other tasks' accepted tests this case must leave exactly as they are. */
+  frozenTests: string[];
+  /** Registers how a message the owner sends during the attempt reaches the running worker. */
+  hearOwner?: (deliver: (text: string) => void) => void;
   worktree: string;
   deadline: Date;
   signal: AbortSignal;
@@ -60,7 +66,12 @@ export interface VerificationResult {
 }
 
 export interface AutoVerifierPort {
-  verify(worktree: string, signal: AbortSignal): Promise<VerificationResult>;
+  /** `stopOnFailure` stops at the first check that fails: enough to tell a mutant was caught. */
+  verify(
+    worktree: string,
+    signal: AbortSignal,
+    run?: { stopOnFailure?: boolean },
+  ): Promise<VerificationResult>;
 }
 
 /** Setup before the base check: run once, in the run's isolation. */

@@ -100,7 +100,7 @@ describe("live topology: one profile in every role", () => {
         timeline.push({ t: at(), event });
       };
 
-      await host.saveConnection({ url: url!, token: token!, roles: {} });
+      await host.saveConnection({ url: url!, token: token! });
       await host.refreshServerInfo();
       const probe = (await host.getState()).probe;
       expect(probe?.ok, probe?.error).toBe(true);
@@ -115,7 +115,6 @@ describe("live topology: one profile in every role", () => {
         profileId: model.profileId ?? model.id,
         profileName: model.name ?? model.id,
         source: "interactive",
-        routingRevision: model.routingRevision,
         lastApprovedRoutingRevision: model.routingRevision,
       });
       const roles: RoleMap = {

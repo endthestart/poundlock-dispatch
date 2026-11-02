@@ -1,6 +1,7 @@
 # ADR 011 — Manager interactions, visible status, and frontier order
 
-Status: Accepted by the owner, 2026-09-13. Implementation is a manual-test candidate.
+Status: Accepted by the owner, 2026-09-13. Built in 0.1.1; the manager conversation
+workflow in [MANUAL_TEST_UX.md](../MANUAL_TEST_UX.md) checks it by hand.
 
 The manager answers ordinary questions without forcing a plan. An agreed small
 deliverable can be delegated to a worker under existing tool permissions; the

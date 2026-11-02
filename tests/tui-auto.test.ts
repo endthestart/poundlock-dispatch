@@ -144,19 +144,35 @@ async function setup() {
 }
 
 describe("/auto in the terminal client", () => {
-  it("shows the folder's run as verified, not reviewed, and hides and shows it again", async () => {
+  it("shows the folder's run as the shared run card, and hides and shows it again", async () => {
     const env = await setup();
     await env.app.submitForTest("/auto watch");
     const screen = env.screen();
-    expect(screen).toContain("Auto run · verified, not reviewed");
-    expect(screen).toContain("Cases 1/2 verified, not reviewed");
-    expect(screen).toContain("orion-qwen3.8-27b-mtp");
-    expect(screen).toContain("The runner is not running");
-    expect(screen).toContain("/auto stop");
+    expect(screen).toContain("Paused · 1 of 2 tasks verified");
+    expect(screen).toContain("Needs you: Its runner stopped");
+    expect(screen).toContain("Built: 1 of 2 tasks verified by the checks");
+    // Paused: it is resumed, not stopped.
+    expect(screen).toContain("type to message it · /autopilot details · resume");
     await env.app.submitForTest("/auto hide");
-    expect(env.screen()).not.toContain("Auto run · verified");
+    expect(env.screen()).not.toContain("Paused · 1 of 2");
     await env.app.submitForTest("/auto watch");
-    expect(env.screen()).toContain("Auto run · verified");
+    expect(env.screen()).toContain("Paused · 1 of 2");
+    await env.app.stop();
+  });
+
+  it("opens the run's details: the branch and each task's stage, even with the card hidden", async () => {
+    const env = await setup();
+    await env.app.submitForTest("/auto watch");
+    await env.app.submitForTest("/auto hide");
+    await env.app.submitForTest("/auto details");
+    const screen = env.screen();
+    expect(screen).toContain("Autopilot run");
+    expect(screen).toContain("Paused · 1 of 2 tasks verified");
+    expect(screen).toContain(`The work is on branch auto/${env.run.runId}`);
+    expect(screen).toContain("1. verified · one");
+    expect(screen).toContain("2. waiting · two");
+    await env.app.submitForTest("/chat");
+    expect(env.screen()).not.toContain("2. waiting · two");
     await env.app.stop();
   });
 
@@ -165,10 +181,27 @@ describe("/auto in the terminal client", () => {
     await env.app.submitForTest("/auto stop");
     expect(await env.notice()).toContain("The runner was not running. The run is stopped");
     expect((await env.ledger.state()).outcome).toBe("cancelled_after_checkpoint");
-    expect(env.screen()).toContain("Ended: stopped; verified work kept");
+    expect(env.screen()).toContain("Stopped, work kept");
     expect(
       (await env.docker.calls()).some((c) => c[0] === "rm" && c.includes(env.run.container)),
     ).toBe(true);
+    await env.app.stop();
+  });
+
+  it("sends /auto message's words as typed to the folder's run", async () => {
+    const env = await setup();
+    await env.app.submitForTest("/auto message don't touch the tests");
+    expect(await env.notice()).toContain("Saved. The runner is not running");
+    expect((await env.ledger.readInbox()).map((entry) => entry.text)).toEqual([
+      "don't touch the tests",
+    ]);
+    await env.app.stop();
+  });
+
+  it("checks a merge before offering it, and refuses one for a run still open", async () => {
+    const env = await setup();
+    await env.app.submitForTest("/auto merge");
+    expect(await env.notice()).toBe("Stop the Autopilot run before merging its work.");
     await env.app.stop();
   });
 

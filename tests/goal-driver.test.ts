@@ -616,3 +616,20 @@ it("asks the Planner at once which frozen tests the run may change, and counts t
     ),
   ).toEqual([]);
 });
+
+it("reviews a plan without milestones as one, without planning it again", async () => {
+  const ledger = await ledgerWith(["T1"]);
+  const goal = board();
+  const plan = (await goal.plan())!;
+  plan.milestones = undefined;
+  delete (goal.tasksNow[0] as { milestoneId?: string }).milestoneId;
+  const { port, calls } = planner({
+    reviews: [{ tasks: [], verdicts: [shown("R1"), shown("R2")], complete: true }],
+  });
+  const idle = goalDriver({ planner: port, board: goal, ledger, checks: [], checkpoint: "notify" });
+  const answer = await idle(await ledger.state(), new AbortController().signal);
+  // The board's own tasks belong to the whole plan's milestone: reviewed, never replanned.
+  expect(calls).toEqual(["review M1"]);
+  expect(answer).toMatchObject({ end: { outcome: "objective_met" } });
+  expect(plan.milestones).toBeUndefined();
+});

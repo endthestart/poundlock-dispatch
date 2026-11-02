@@ -2,7 +2,6 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import { validEscalationGrant } from "@core/escalation";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import { type ManagerPort, ProjectOrchestrator } from "@core/orchestration";
 import { projectFiles } from "@core/paths";
 import { createFolderProject } from "@core/projects";
@@ -14,6 +13,7 @@ import { MAX_REPAIRS_PER_TASK } from "@shared/policy-limits";
 import { projectStatusView } from "@shared/project-status";
 import type { InteractiveModel } from "@shared/types";
 import { describe, expect, it } from "vitest";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 const frontier = (id: string) => ({
@@ -258,6 +258,29 @@ describe("agreed Dispatch interaction flow", () => {
     expect(after.map((task) => task.title)).toEqual(["Document", "Second"]);
     expect(after[0].id).toBe(first[0].id);
   });
+  it("drops the tasks a revision leaves out while the plan was never approved", async () => {
+    const f = await fixture();
+    await f.engine.toolHost(f.project.id).proposePlan(planInput);
+    await f.engine.toolHost(f.project.id).proposePlan({
+      ...planInput,
+      summary: "Create a different document",
+      tasks: [
+        {
+          title: "Second",
+          objective: "Second",
+          workerPrompt: "Second",
+          acceptanceCriteria: "Reviewed",
+          difficulty: "small",
+          route: "interactive",
+        },
+      ],
+    });
+    expect((await f.store.getPendingBoard(f.project.id))?.tasks.map((task) => task.title)).toEqual([
+      "Second",
+    ]);
+    await f.engine.approvePlan(f.project.id);
+    expect((await f.store.getTasks(f.project.id)).map((task) => task.title)).toEqual(["Second"]);
+  });
   it("keeps published specifications an update restates as placeholder, and says so", async () => {
     const f = await fixture();
     await f.engine.toolHost(f.project.id).proposePlan(planInput);
@@ -275,7 +298,9 @@ describe("agreed Dispatch interaction flow", () => {
         },
       ],
     });
-    expect(reply).toMatch(/1 published task\(s\) restated without real content keep their own/);
+    expect(reply.text).toMatch(
+      /1 published task\(s\) restated without real content keep their own/,
+    );
     const pending = await f.store.getPendingBoard(f.project.id);
     expect(pending?.changes).toEqual([
       { title: "Document", change: "changed", fields: ["may change frozen tests"] },
@@ -313,7 +338,9 @@ describe("agreed Dispatch interaction flow", () => {
     await expect(update()).rejects.toThrow(
       /“Managed copy” lists \.\/tests\/import\.rs, a frozen test its worker cannot change/,
     );
-    await expect(update(true)).resolves.toMatch(/Proposed board update|recorded/);
+    await expect(update(true)).resolves.toMatchObject({
+      text: expect.stringMatching(/Proposed board update|recorded/),
+    });
   });
   it("merges an agreed extra task into the published board", async () => {
     const f = await fixture();

@@ -1,7 +1,6 @@
 import type { PoundlockCapabilities } from "@core/capabilities";
 import {
   AmbiguousInferenceError,
-  CAPACITY_RETRY,
   type CapacityWaitState,
   capacityIdentityChanged,
   isAmbiguousInferenceFailure,
@@ -17,7 +16,6 @@ import {
   PreflightCache,
   type PreflightOperation,
   parsePreflightResult,
-  preflightCacheKey,
   shouldInvalidatePreflight,
   tokenFingerprint,
 } from "@core/preflight";
@@ -107,13 +105,6 @@ export function workerProviderOptions(input: {
   };
 }
 
-interface RegisteredPoundlockModel {
-  providerId: string;
-  modelId: string;
-  contextWindow: number;
-  maxTokens: number;
-}
-
 /** Pi's own names for the explicit levels; each is sent upstream unchanged. */
 const PI_EXPLICIT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -129,9 +120,12 @@ export function poundlockModelDefinition(model: InteractiveModel) {
   const reasoning = verified.length > 0;
   // Anthropic caches only the prompt it is told to, and passes the markers
   // through Poundlock and LiteLLM; unmarked, a frontier Planner review re-sent
-  // about a million input tokens. Its cache reads cost a
-  // tenth of input and its writes a quarter more.
-  const anthropic = model.provider === "anthropic";
+  // about a million input tokens. Its cache reads cost a tenth of input and its
+  // writes a quarter more. Through OpenRouter the provider reads "openrouter" and
+  // only the served model names Anthropic, so a Claude model re-paid its whole
+  // prompt on every turn.
+  const anthropic =
+    model.provider === "anthropic" || (model.servedModel ?? "").startsWith("openrouter/anthropic/");
   const input = model.pricing?.inputPerMtok ?? 0;
   return {
     id: model.id,
@@ -580,5 +574,3 @@ function headerFrom(error: unknown): string | undefined {
   }
   return undefined;
 }
-
-export { preflightCacheKey, CAPACITY_RETRY };

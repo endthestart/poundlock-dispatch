@@ -54,6 +54,18 @@ fetching meets bot challenges, and self-hosted SearXNG suits private, low-volume
 - **Every call is recorded**: a run's ledger gets a `web_call` event per search or fetch,
   refusals included. The manager's calls go to the project's `web-calls.jsonl`.
 
+- **GitHub search (30 Oct):** a third tool, `github_search`, finds public repositories or
+  issues through GitHub's REST API with no token. It goes out under `web_search`'s rules (the
+  same privacy check, cap and record), shows each repository's stars, language and last push,
+  and its result pages may then be read with `web_fetch`, as GitHub's robots.txt allows.
+
+- **The reference packet (30 Oct):** a gating Planner with web search may save excerpts of
+  pages it read in that call as `sources`, cited by the tasks they back. Each excerpt must be
+  the page's own words, checked against the text the Planner was shown. They are kept in the
+  run folder's `references.json` under run-wide ids. Workers stay offline: each task's brief
+  carries what it cites plus the packet's two best BM25 matches for its words, at most 4,000
+  characters, marked as untrusted reference.
+
 ## Consequences
 
 - The Planner can look up how the product it is cloning behaves, and the owner can read

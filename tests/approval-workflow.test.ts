@@ -197,7 +197,6 @@ describe("project approval policy", () => {
     f.ctx.trust = "ask";
     const outside = join(f.root, "outside.txt");
     await writeFile(outside, "keep");
-    let asked = 0;
     const result = await evaluateWorkerToolCall(
       {
         projectRoot: f.folder,
@@ -205,10 +204,7 @@ describe("project approval policy", () => {
         project: f.project,
         trust: "ask",
         bashEnabled: true,
-        authorizeMutation: async () => {
-          asked += 1;
-          return "deny";
-        },
+        authorizeMutation: async () => "deny",
       },
       { toolName: "write", toolCallId: "write-outside", input: { path: outside, content: "x" } },
     );

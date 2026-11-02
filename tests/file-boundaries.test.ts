@@ -1,7 +1,6 @@
 import { mkdir, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { safeReadFile } from "@core/file-access";
-import type { WorkerContext } from "@core/interactive-worker";
 import { compileArgv } from "@runtime/argv";
 import { resolveToolPath } from "@runtime/path-policy";
 import { buildSandboxRequest } from "@runtime/sandbox-policy";
@@ -47,14 +46,6 @@ describe("canonical project read boundaries", () => {
       prefixed = join(sibling, "file.txt");
     await writeFile(outside, "outside");
     await writeFile(prefixed, "sibling");
-    const ctx = {
-      cwd: root,
-      trust: "assist",
-      project: {
-        policy: { readGrants: [] },
-        source: { kind: "local_folder", excludedPatterns: [] },
-      },
-    } as unknown as WorkerContext;
     // `safeReadFile` is the manager's read path; the worker's own path is
     // asserted against `evaluateWorkerToolCall` in approval-workflow.test.ts.
     // Both used to be checked here through `approvedPath`, a third copy of

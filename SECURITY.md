@@ -8,9 +8,9 @@ write implementation. Manager-proposed checks select project tests, not inline c
 Direct reads require canonical project scope or a saved exact-file grant. Ignored
 and sensitive files require that grant even inside the project. Grants identify a
 resolved target, not a redirectable symlink. Removing a grant and saving project
-settings pauses active work. Durable snapshots omit excluded files and require
-separate consent. Inference destination is declared metadata or explicit operator
-policy; unknown is never inferred from model names or gateway type.
+settings pauses active work. A manual job's upload (`dispatch jobs submit`) omits
+ignored and secret files. Inference destination is declared metadata or explicit
+operator policy; unknown is never inferred from model names or gateway type.
 
 In **Approve for me**, structured project commands run only after Dispatch
 qualifies the macOS `sandbox-exec` boundary. That boundary limits writes to the
@@ -23,7 +23,8 @@ approved raw Bash command with the user's account authority. Ordinary in-project
 file edits do not wait for a card in Ask; ignored, secret, outside, and
 destructive actions still do. **Full access** is
 host-user command authority and is not an isolation guarantee. Uploading a project
-snapshot for a background job always asks separately.
+snapshot for a manual job always takes its own command; Dispatch's own work never
+uploads one.
 
 **Network.** Each project's **Internet** and **Local network** switches (ADR 015) bind
 every command a worker runs, in every mode. A sandboxed command gets them in its

@@ -1,6 +1,8 @@
 # ADR 012 — Compile semantic manager proposals into execution plans
 
-Status: Accepted, 2026-09-14.
+Status: Accepted, 2026-09-14. Amended by [ADR 016](016-autopilot-goal-engine.md): a
+compiled plan can belong to a spec milestone, accepted by gates and judged by the
+Planner.
 
 The Project Manager decides what work is needed: the plan summary, acceptance
 criteria, task objectives, dependencies, difficulty and execution path. It does

@@ -3,6 +3,8 @@
 Status: Accepted; updated by owner direction on 2026-09-13. GUI first remains the
 current MVP delivery choice. Shared-runtime extraction and other interfaces are
 future work, not claims of completed portability or additional MVP acceptance gates.
+Amended by [ADR 016](016-autopilot-goal-engine.md): in Autopilot the gates, not the
+manager, review each task.
 
 ## Decision
 

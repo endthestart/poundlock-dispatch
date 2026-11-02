@@ -23,7 +23,7 @@ import {
   MAX_REUSE_HINTS,
   taskHintIssue,
 } from "@core/task-hints";
-import { managerReadableRoot } from "@core/workflow-support";
+import { projectWorkingRoot } from "@core/workflow-support";
 import {
   applyReasoning,
   poundlockModelDefinition,
@@ -36,11 +36,14 @@ import {
   type ContextUsage,
   compactionFromPiEvent,
 } from "@shared/compaction";
+import { splitLeakedParameters } from "@shared/leaked-parameters";
+
 import { ReasoningUnsupportedError, reasoningLabel } from "@shared/reasoning";
 import { requireInteractiveLimits } from "@shared/roles";
 import { MAX_QUESTION_OPTIONS, type QuestionOption } from "@shared/types";
 import { webSearchFor } from "@shared/web-search";
 import { Type } from "typebox";
+import { MODEL_REQUEST_TIMEOUT_MS } from "./model-http";
 import { lockedPiResources } from "./pi-resources";
 import { createWebTools, WEB_TOOL_NAMES, type WebTools, webToolDefinitions } from "./web-tools";
 
@@ -104,6 +107,8 @@ interface PiManagerOptions {
   dataDestination?: import("@shared/types").DataDestination;
   /** Levels Poundlock verified for this profile; a turn may use only these. */
   reasoningLevels?: import("@shared/types").ReasoningLevel[];
+  /** What the route serves and costs: it decides prompt caching and the reported cost. */
+  route?: Pick<import("@shared/types").InteractiveModel, "provider" | "servedModel" | "pricing">;
   lastApprovedRoutingRevision?: string;
   capabilities?: import("@core/capabilities").PoundlockCapabilities;
   providerId?: string;
@@ -261,7 +266,9 @@ export async function createPiManager(options: PiManagerOptions): Promise<Manage
       const completedDrafts: string[] = [];
       const spoken = () => completedDrafts.join("\n\n");
       let planFailures = 0;
+      let cutOffPlans = 0;
       let terminalPlanFailure: string | undefined;
+      let replyCutOff = false;
       const toolArguments = new Map<string, unknown>();
       session.agent.toolExecution = "sequential";
       ctx.onActivity?.(`Talking to ${talkingTo}…`);
@@ -283,6 +290,7 @@ export async function createPiManager(options: PiManagerOptions): Promise<Manage
           }
           if (event.type === "message_end" && event.message.role === "assistant") {
             finalAssistant = event.message as FinalAssistantMessage;
+            replyCutOff = finalAssistant.stopReason === "length";
             // A visible explanation can precede a tool call. Keep it on screen
             // until the whole turn is saved, instead of making it disappear.
             const completedText = assistantMessageText(event.message);
@@ -302,13 +310,18 @@ export async function createPiManager(options: PiManagerOptions): Promise<Manage
           }
           if (event.type === "tool_execution_end" && event.toolName) {
             if (event.toolName === "propose_plan" && event.isError) {
-              planFailures += 1;
-              const correction = focusedPlanCorrection(
-                toolArguments.get(event.toolCallId),
-                event.result,
-              );
+              // A cut-off plan and an invalid one each get a correction: a
+              // manager shortened a cut-off plan and was stopped before it heard
+              // what else was wrong.
+              const tries = replyCutOff ? ++cutOffPlans : ++planFailures;
+              // Pi refuses a call from a reply cut off at the output limit. Field
+              // errors from its truncated end would have the model resend the same
+              // plan, too long again.
+              const correction = replyCutOff
+                ? `${toolResultText(event.result)} ${SHORTER_PLAN}`
+                : focusedPlanCorrection(toolArguments.get(event.toolCallId), event.result);
               replaceToolResultText(event.result, correction);
-              if (planFailures === 1) {
+              if (tries === 1) {
                 ctx.onActivity?.(`The manager submitted an invalid plan. Correcting once…`);
               } else {
                 terminalPlanFailure = correction;
@@ -320,8 +333,11 @@ export async function createPiManager(options: PiManagerOptions): Promise<Manage
                 }, 0);
               }
             }
+            // A plan whose review asks for changes keeps the turn for one revision.
+            const revising = event.toolName === "propose_plan" && event.result?.terminate !== true;
             if (
               !event.isError &&
+              !revising &&
               (TERMINATING_MANAGER_TOOLS as readonly string[]).includes(event.toolName)
             ) {
               yielded = true;
@@ -450,6 +466,9 @@ export async function createPiManager(options: PiManagerOptions): Promise<Manage
     };
   }
 }
+
+const SHORTER_PLAN =
+  "The whole plan must fit in one reply: keep worker prompts and acceptance criteria brief, and for a big product give milestones and only the first milestone's tasks; Autopilot plans the rest.";
 
 function focusedPlanCorrection(args: unknown, result: unknown): string {
   const issues: Array<{ field: string; reason: string; allowed?: string[] }> = [];
@@ -591,7 +610,7 @@ async function ensureSession(
     return existing;
   }
   const files = projectFiles(options.store.layout.root, ctx.project.id);
-  const cwd = managerReadableRoot(options.store.layout.root, ctx.project);
+  const cwd = projectWorkingRoot(options.store.layout.root, ctx.project);
   await mkdir(files.piAgent, { recursive: true, mode: 0o700 });
   const { contextTokens, maxOutputTokens } = requireInteractiveLimits({
     context_tokens: options.contextTokens,
@@ -611,6 +630,7 @@ async function ensureSession(
     authHeader: true,
     models: [
       poundlockModelDefinition({
+        ...options.route,
         id: options.modelName,
         context_tokens: contextTokens,
         max_output_tokens: maxOutputTokens,
@@ -629,6 +649,7 @@ async function ensureSession(
         keepRecentTokens: Math.min(6000, Math.floor(contextTokens / 8)),
       },
       retry: { enabled: false },
+      httpIdleTimeoutMs: MODEL_REQUEST_TIMEOUT_MS,
     },
     { projectTrusted: false },
   );
@@ -1017,6 +1038,12 @@ export function buildTools(
           ),
         ),
         architecture: Type.Optional(Type.String()),
+        checks: Type.Optional(
+          Type.Array(Type.String(), {
+            description:
+              "Commands that prove the build in its toolchain: the formatter, the linter, the tests (for example cargo fmt --check). The owner confirms them when Autopilot starts.",
+          }),
+        ),
         environmentNeed: Type.Union([Type.Literal("none"), Type.Literal("python")], {
           description:
             "python for any plan that creates or runs Python, even in an empty folder; else none.",
@@ -1026,8 +1053,10 @@ export function buildTools(
             "True only if the plan must fetch project dependencies; the owner approves it.",
         }),
       }),
-      execute: async (_id: string, params: ProposePlanInput, signal?: AbortSignal) =>
-        text(await host.proposePlan(params, signal), true),
+      execute: async (_id: string, params: ProposePlanInput, signal?: AbortSignal) => {
+        const proposed = await host.proposePlan(params, signal);
+        return text(proposed.text, !proposed.revise);
+      },
     }),
     pi.defineTool({
       name: "investigate",
@@ -1111,8 +1140,10 @@ export function buildTools(
           ),
         ),
       }),
-      execute: async (_id: string, params: { question: string; options?: QuestionOption[] }) =>
-        text(await host.askUser(params.question, params.options), true),
+      execute: async (_id: string, params: { question: string; options?: QuestionOption[] }) => {
+        const asked = splitLeakedParameters(params.question, params.options);
+        return text(await host.askUser(asked.question, asked.options), true);
+      },
     }),
     pi.defineTool({
       name: "request_folder_access",
@@ -1210,20 +1241,4 @@ function assistantMessageText(message: { content?: unknown }): string {
       return "";
     })
     .join("");
-}
-
-export function extractAssistantText(
-  session: {
-    messages?: Array<{ role?: string; content?: unknown }>;
-  },
-  startIndex = 0,
-): string {
-  const messages = session.messages?.slice(startIndex) ?? [];
-  const replies: string[] = [];
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    const text = assistantMessageText(message);
-    if (text.trim()) replies.push(text);
-  }
-  return replies.join("\n\n");
 }

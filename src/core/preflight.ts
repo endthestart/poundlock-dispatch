@@ -1,3 +1,4 @@
+import { grantPermissionHint } from "@shared/types";
 import { sha256Text } from "./ids.js";
 
 export type PreflightOperation = "inference" | "job";
@@ -79,10 +80,6 @@ export class PreflightCache {
       this.values.delete(key);
     }
   }
-
-  invalidateToken(tokenFingerprintValue: string): void {
-    this.invalidate({ tokenFingerprint: tokenFingerprintValue });
-  }
 }
 
 export function shouldInvalidatePreflight(error: { status?: number; code?: string }): boolean {
@@ -111,7 +108,7 @@ const FAILED_IDENTITY = /fail|reconcil|required|blocked|denied/i;
 
 export function blockedPreflightMessage(reason: string): string {
   if (reason === "external_permission_required") {
-    return "This Poundlock application token cannot call external providers. In Poundlock Access, create a replacement token with Call external providers, then save and test it in Dispatch.";
+    return `This Poundlock application token may not send prompts to external services. ${grantPermissionHint(["external:invoke"])}`;
   }
   if (reason === "data_destination_confirmation_required") {
     return "Poundlock blocked this profile because its data destination is not confirmed. Confirm its destination in Poundlock before sending project context.";

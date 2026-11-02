@@ -57,21 +57,14 @@ function snapshot(
       source: {
         kind: "local_folder",
         originalPath: "/Users/me/tasks",
-        capturedAt: "t",
-        snapshotSha256: "x",
         baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
         excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
       },
       policy: defaultPolicy(),
       budget: defaultBudget(),
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
+      integration: {},
       planRevision: 1,
       managerSessionId: "s",
-      eventCursor: 0,
       ...project,
     } as ProjectSnapshot["project"],
     tasks: [],
@@ -192,7 +185,9 @@ describe("taskStateView", () => {
 
   it("describes the decision from workflow state, not worker completion", () => {
     expect(managerDecisionText(task("needs_review", [{ status: "completed" }]))).toMatch(/Waiting/);
-    expect(managerDecisionText(task("applied"))).toMatch(/Accepted/);
+    expect(managerDecisionText(task("applied", [{ status: "completed" }]))).toMatch(/Accepted/);
+    // Autopilot's merged work was verified by its checks, never accepted by the manager.
+    expect(managerDecisionText(task("applied"))).toMatch(/Verified by Autopilot's checks/);
   });
 });
 

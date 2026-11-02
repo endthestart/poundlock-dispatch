@@ -27,21 +27,14 @@ function project(root: string): ProjectRecord {
     source: {
       kind: "local_folder",
       originalPath: root,
-      capturedAt: "now",
-      snapshotSha256: "",
       baseRevision: "",
-      includedFiles: 0,
-      includedBytes: 0,
       excludedPatterns: [],
-      includedUncommitted: true,
-      originalFingerprint: "",
     },
     policy: defaultPolicy(),
     budget: defaultBudget(),
-    integration: { headRevision: "", expectedBase: "", appliedPatchSha256: [] },
+    integration: {},
     planRevision: 1,
     managerSessionId: "manager",
-    eventCursor: 0,
   };
 }
 

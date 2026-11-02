@@ -81,6 +81,23 @@ describe("the title bar", () => {
     expect(underline).toBe("─".repeat(100));
   });
 
+  it("shows the Autopilot run's state while the run is the project's latest work", () => {
+    const withRun = (status: "completed" | "planning") => {
+      const base = project({ status });
+      return state({
+        connection: CONNECTED,
+        snapshot: snapshot({ project: base }),
+        autopilotGlances: {
+          [base.id]: { label: "Building 3/10 · on local fallback", tone: "active" },
+        },
+      });
+    };
+    expect(plain(renderTitleBar(withRun("completed"), 100))[0]).toMatch(
+      /^ {2}demo {2}● Building 3\/10 · on local fallback/,
+    );
+    expect(plain(renderTitleBar(withRun("planning"), 100))[0]).not.toContain("Building");
+  });
+
   it("is two lines, both inside the terminal, at every width", () => {
     for (const width of [40, ...WIDTHS]) {
       const lines = renderTitleBar(running(), width, colour);
@@ -332,15 +349,47 @@ describe("the board", () => {
     expect(renderBoard(auto, 100).lines[0]).toContain("Approved automatically (Full access)");
   });
 
+  it("shows a run's tasks where Autopilot has them, by milestone, with the unfinished set apart", () => {
+    const board = running({
+      autopilot: {
+        board: true,
+        cases: [
+          { id: "build-the-parser", title: "Build the parser", stage: "accepted" },
+          { id: "add-the-cli", title: "Add the CLI", stage: "running" },
+          { id: "write-the-docs", title: "Write the docs", stage: "abandoned" },
+        ],
+      } as unknown as AppStateView["autopilot"],
+    });
+    const snap = board.snapshot!;
+    snap.plan = {
+      ...snap.plan!,
+      milestones: [{ id: "M1", title: "Parse and run" }],
+    } as typeof snap.plan;
+    snap.tasks = [
+      task("Build the parser", "ready", { milestoneId: "M1" }),
+      task("Add the CLI", "ready", { milestoneId: "M1" }),
+      task("Write the docs", "ready", { milestoneId: "M1" }),
+    ];
+    const text = plain(renderBoard(board, 100).lines).join("\n");
+    expect(text).toContain("Autopilot: 1 verified, 1 in progress. 1 task did not finish.");
+    expect(text).toContain("M1 · Parse and run · 1 of 2 verified");
+    expect(text).toContain("[v] 1. Build the parser\n    Verified by Autopilot, not reviewed");
+    expect(text).toContain("[>] 2. Add the CLI\n    Autopilot working");
+    expect(text).toMatch(
+      /1 did not finish; the Planner replans what they were for:\n\[!\] 3\. Write the docs/,
+    );
+    expect(text).toContain("Merge it with /autopilot merge when the run ends.");
+  });
+
   it("marks each task by state and says the state in words, in the state's tone", () => {
     const { lines } = renderBoard(running(), 100, colour);
     const body = plain(lines).join("\n");
-    expect(body).toContain("[x] Add the tokenizer module\n    Accepted · interactive");
+    expect(body).toContain("[x] 1. Add the tokenizer module\n    Accepted · interactive");
     expect(body).toContain(
-      "[>] Write tokenizer unit tests\n    Running · interactive · Qwen3 Coder 30B",
+      "[>] 2. Write tokenizer unit tests\n    Running · interactive · Qwen3 Coder 30B",
     );
     expect(body).toContain(
-      "[ ] Wire the tokenizer into the command line entry point\n    Up next · snippet",
+      "[ ] 3. Wire the tokenizer into the command line entry point\n    Up next · snippet",
     );
     const raw = lines.join("\n");
     expect(raw).toContain(colour.paint("ok", "[x]"));
@@ -366,7 +415,7 @@ describe("the board", () => {
       const one = running();
       one.snapshot!.tasks = [task("A task", status)];
       const lines = renderBoard(one, 80).lines;
-      const at = lines.findIndex((line) => line.startsWith(`${mark} A task`));
+      const at = lines.findIndex((line) => line.startsWith(`${mark} 1. A task`));
       expect(at, status).toBeGreaterThan(-1);
       expect(lines[at + 1], status).toMatch(new RegExp(`^ {4}${label}`));
       // Every character of every mark is ASCII.
@@ -378,8 +427,8 @@ describe("the board", () => {
     const off = createColours({ theme: "mocha", isTTY: false, env: {} });
     const text = renderBoard(running(), 100, off).lines.join("\n");
     expect(text).not.toContain("\x1b");
-    expect(text).toContain("[x] Add the tokenizer module\n    Accepted · interactive");
-    expect(text).toContain("[ ] Wire the tokenizer");
+    expect(text).toContain("[x] 1. Add the tokenizer module\n    Accepted · interactive");
+    expect(text).toContain("[ ] 3. Wire the tokenizer");
     expect(text).toContain("[x] means the Project Manager accepted the work.");
   });
 

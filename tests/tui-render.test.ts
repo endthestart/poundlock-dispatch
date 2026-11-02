@@ -7,11 +7,13 @@
  * project is doing.
  */
 import type { ToolApproval } from "@shared/permissions";
+import { projectStatusView } from "@shared/project-status";
 import type { AppStateView, ChatMessage, ProjectRecord, ProjectSnapshot } from "@shared/types";
 import { defaultPolicy } from "@shared/types";
 import {
   renderActions,
   renderBoard,
+  renderComposerHint,
   renderConversation,
   renderSetup,
   renderStatusLines,
@@ -32,21 +34,14 @@ function project(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     source: {
       kind: "local_folder",
       originalPath: "/tmp/demo",
-      capturedAt: "2026-01-01T00:00:00.000Z",
-      snapshotSha256: "",
       baseRevision: "",
-      includedFiles: 1,
-      includedBytes: 1,
       excludedPatterns: [],
-      includedUncommitted: false,
-      originalFingerprint: "",
     },
     policy: defaultPolicy(),
     budget: { jobsSubmitted: 0, managerTurnsUsed: 0, externalEscalationsUsed: 0 },
     integration: {},
     planRevision: 1,
     managerSessionId: "session-1",
-    eventCursor: 0,
     ...overrides,
   } as ProjectRecord;
 }
@@ -282,6 +277,34 @@ describe("conversation screen", () => {
     expect(models.length).toBeLessThanOrEqual(WIDTH);
   });
 
+  it("names this project's own worker, as its runs use it", () => {
+    const own = project({ policy: { ...defaultPolicy(), workerModel: "69dc56fd" } });
+    const [, models] = renderStatusLines(
+      state({
+        snapshot: snapshot({ project: own }),
+        connection: {
+          url: "https://poundlock.example",
+          tokenConfigured: true,
+          rolesReady: true,
+          roles: {
+            interactive: {
+              profileId: "frontier-id",
+              profileName: "frontier-gpt-sol",
+              source: "interactive",
+            },
+          },
+        } as AppStateView["connection"],
+        probe: {
+          ok: true,
+          interactiveModels: [{ id: "vega-qwen", profileId: "69dc56fd" }],
+        } as AppStateView["probe"],
+      }),
+      WIDTH,
+    );
+    expect(models).toContain("wrk vega-qwen");
+    expect(models).not.toContain("frontier-gpt-sol");
+  });
+
   it("wraps long text to the terminal width", () => {
     const long = "word ".repeat(200).trim();
     const screen = renderConversation(
@@ -340,6 +363,25 @@ describe("the two-line status", () => {
     const [, line2] = renderStatusLines(withRoles, 40);
     expect(line2).toContain("mgr frontier-gpt-sol");
   });
+
+  it("names the local fallback once a spending limit moved the manager to it", () => {
+    const onFallback = {
+      ...withRoles,
+      snapshot: snapshot({
+        project: project({
+          managerFallback: {
+            profileId: "orion",
+            profileName: "orion-qwen",
+            from: "frontier-gpt-sol",
+            at: "2026-10-28T10:00:00.000Z",
+          },
+        }),
+      }),
+    };
+    const [, line2] = renderStatusLines(onFallback, 200);
+    expect(line2).toContain("mgr orion-qwen (local fallback after a spending limit)");
+    expect(line2).not.toContain("frontier-gpt-sol");
+  });
 });
 
 describe("board screen", () => {
@@ -362,8 +404,8 @@ describe("board screen", () => {
       WIDTH,
     );
     const body = text(screen.lines);
-    expect(body).toMatch(/\[x\] Add the endpoint\n {4}Accepted/);
-    expect(body).toMatch(/\[>\] Add tests\n {4}Running/);
+    expect(body).toMatch(/\[x\] 1\. Add the endpoint\n {4}Accepted/);
+    expect(body).toMatch(/\[>\] 2\. Add tests\n {4}Running/);
   });
 
   it("says so plainly when there is nothing to show yet", () => {
@@ -414,20 +456,23 @@ describe("telling your words from the manager's", () => {
     // Every line used to carry an eight-column speaker gutter — the word
     // once, then eight spaces on every wrapped line — which spent a tenth of
     // the terminal restating whose turn it was.
+    // Only the time sits over it, against the same margin.
     const lines = renderTranscript([message("user", "Give me a quick summary.")], WIDTH);
     const written = lines.filter((line) => line.trim());
-    expect(written).toHaveLength(1);
-    expect(written[0]).toMatch(/^ +\u258F /);
-    expect(written[0].length).toBeLessThanOrEqual(WIDTH);
-    expect(written[0]).not.toContain("you");
+    expect(written).toHaveLength(2);
+    expect(written[0]).toMatch(/^ +\S.*20\d\d/);
+    expect(written[1]).toMatch(/^ +\u258F /);
+    expect(written[1].length).toBeLessThanOrEqual(WIDTH);
+    expect(written.join("\n")).not.toMatch(/you/i);
   });
 
   it("leaves the manager flush left and unlabelled", () => {
     // The manager is the default voice here; labelling it spends a column on
     // saying so. Machinery still marks itself, because it is not a voice.
+    // Only its time sits over it.
     const lines = renderTranscript([message("manager", "Here is the summary.")], WIDTH);
-    expect(lines[0]).toBe("Here is the summary.");
-    expect(lines[0]).not.toContain("manager");
+    expect(lines[1]).toBe("Here is the summary.");
+    expect(lines.slice(0, 2).join("\n")).not.toMatch(/manager/i);
 
     const system = renderTranscript([message("system", "Plan approved.")], WIDTH);
     expect(system[0]).toBe("\u00b7 Plan approved.");
@@ -460,7 +505,9 @@ describe("telling your words from the manager's", () => {
 
   it("keeps a wrapped message of yours inside the terminal", () => {
     const long = "word ".repeat(60).trim();
-    const lines = renderTranscript([message("user", long)], WIDTH).filter((line) => line.trim());
+    const lines = renderTranscript([message("user", long)], WIDTH)
+      .filter((line) => line.trim())
+      .slice(1);
     expect(lines.length).toBeGreaterThan(1);
     for (const line of lines) {
       expect(line.length).toBeLessThanOrEqual(WIDTH);
@@ -492,5 +539,25 @@ describe("what the actions line is for", () => {
     expect(renderActions([{ id: "review_again", label: "Review again" }])).toEqual([
       "/reopen  Review again",
     ]);
+  });
+});
+
+describe("the project's status while Autopilot runs it", () => {
+  it("leaves how far along it is to the Autopilot card, as the app does", () => {
+    const status = projectStatusView(snapshot());
+    expect(status.evidence).toBeTruthy();
+    const running = state({ autopilot: { phase: "running" } as AppStateView["autopilot"] });
+    expect(renderStatusLines(state(), 100)[0]).toContain(status.evidence);
+    expect(renderStatusLines(running, 100)[0]).not.toContain(status.evidence);
+  });
+});
+
+describe("the composer while Autopilot holds the project", () => {
+  it("says that what is typed goes to the run, and when the run reads it", () => {
+    const hint = (phase: string) =>
+      renderComposerHint(state({ autopilot: { phase } as AppStateView["autopilot"] }));
+    expect(hint("running")).toMatch(/^Message Autopilot: the worker hears it now/);
+    expect(hint("interrupted")).toBe("Message Autopilot: the run reads it when you resume…");
+    expect(hint("ended")).not.toContain("Message Autopilot");
   });
 });

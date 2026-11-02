@@ -309,4 +309,15 @@ describe("a check that runs no tests", () => {
     expect(ranNoTests("running 0 tests\ntest result: ok. 0 passed")).toBe(true);
     expect(ranNoTests("Finished dev [unoptimized] target(s)")).toBe(false);
   });
+
+  it("recognizes runners that exit 0 without running any test", async () => {
+    const { ranNoTests } = await import("@shared/failure-excerpt");
+    expect(ranNoTests("Found 0 test(s).\nSystem check identified no issues.\nNO TESTS RAN")).toBe(
+      true,
+    );
+    expect(ranNoTests("\nRan 0 tests in 0.000s\n\nOK")).toBe(true);
+    expect(ranNoTests("collected 0 items")).toBe(true);
+    expect(ranNoTests("Found 3 test(s).\nRan 3 tests in 0.01s\n\nOK")).toBe(false);
+    expect(ranNoTests("System check identified no issues (0 silenced).")).toBe(false);
+  });
 });

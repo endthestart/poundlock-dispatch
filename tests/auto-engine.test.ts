@@ -4,8 +4,6 @@ import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import {
   checkpointsSince,
-  createRunWorktree,
-  ensureMirror,
   exportPatch,
   RunRepo,
   resetToCheckpoint,
@@ -25,7 +23,6 @@ import type {
   AutoVerifierPort,
   AutoWorkerPort,
   CaseAttemptInput,
-  CaseAttemptResult,
 } from "@core/auto/ports";
 import {
   type AutoCase,
@@ -35,54 +32,8 @@ import {
   unfinishedLine,
 } from "@shared/auto-run";
 import { describe, expect, it } from "vitest";
+import { type Env, git, setup, worker } from "./support/auto-engine-harness";
 import { tempDir } from "./support/temp-dir";
-
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd })
-    .toString()
-    .trim();
-
-async function setup(files: Record<string, string> = {}) {
-  const source = await tempDir("auto-source-");
-  git(source, "init", "-q", "-b", "main");
-  await writeFile(join(source, ".gitignore"), ".venv/\n");
-  await writeFile(join(source, "README.md"), "base\n");
-  for (const [name, text] of Object.entries(files)) {
-    await mkdir(join(source, name, ".."), { recursive: true });
-    await writeFile(join(source, name), text);
-  }
-  git(source, "add", "-A");
-  git(source, "commit", "-q", "-m", "base");
-  const base = git(source, "rev-parse", "HEAD");
-  const root = await tempDir("auto-data-");
-  const runsRoot = join(root, "runs");
-  const runDir = join(runsRoot, "r1");
-  await mkdir(runDir, { recursive: true });
-  const mirror = await ensureMirror(source, join(root, "mirrors", "m.git"), base);
-  const repo = await createRunWorktree(mirror, join(runDir, "work"), "auto/r1", base);
-  return {
-    source,
-    base,
-    mirror,
-    repo,
-    runsRoot,
-    runDir,
-    worktree: repo.worktree,
-    ledger: new AutoLedger(runDir),
-  };
-}
-type Env = Awaited<ReturnType<typeof setup>>;
-
-type Script = (input: CaseAttemptInput) => Promise<CaseAttemptResult>;
-
-function worker(script: Script, seen: CaseAttemptInput[] = []): AutoWorkerPort {
-  return {
-    runCase: async (input) => {
-      seen.push(input);
-      return script(input);
-    },
-  };
-}
 
 /** Passes when no *.txt file at the top of the worktree contains "BUG". */
 const verifier: AutoVerifierPort = {
@@ -234,6 +185,61 @@ describe("auto engine", () => {
         reason: "test_schema.txt: it pins one migration; M2 adds tables",
       },
     ]);
+  });
+
+  it("takes a passing change that edits a frozen test to the Planner at once", async () => {
+    // A struct gained fields, and a frozen helper's initializers had to follow.
+    const env = await setup();
+    await write(env.worktree, "test_utils.txt", "Transform { angle }\n");
+    git(env.worktree, "add", "test_utils.txt");
+    git(env.worktree, "commit", "-qm", "frozen helper");
+    const asked: string[] = [];
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, "c1.txt", "translation\n");
+        await write(i.worktree, "test_utils.txt", "Transform { angle, tx, ty }\n");
+        return { finish: "done", summary: "added translation" };
+      }),
+      {
+        frozenTests: ["test_utils.txt"],
+        onFrozenBlocked: async (input) => {
+          asked.push(input.failure);
+          return [{ path: "test_utils.txt", reason: "its initializers follow the new fields" }];
+        },
+      },
+    ).start(spec([cases[0]]));
+    const state = await env.ledger.state();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain("+Transform { angle, tx, ty }");
+    expect(state.cases.map((c) => [c.stage, c.attempts])).toEqual([["accepted", 1]]);
+    expect(state.frozenChanges?.[0]?.paths).toEqual(["test_utils.txt"]);
+  });
+
+  it("leaves the Planner's time on frozen tests out of the case's allowance", async () => {
+    // A passing task's allowance went on a 50-minute decision, and its work was lost.
+    const env = await setup();
+    await write(env.worktree, "test_utils.txt", "frozen\n");
+    git(env.worktree, "add", "test_utils.txt");
+    git(env.worktree, "commit", "-qm", "frozen helper");
+    let calls = 0;
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, "c1.txt", "done\n");
+        await write(i.worktree, "test_utils.txt", ++calls === 1 ? "reformatted\n" : "frozen\n");
+        return { finish: "done", summary: "wrote c1.txt" };
+      }),
+      {
+        frozenTests: ["test_utils.txt"],
+        onFrozenBlocked: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 4000));
+          return [];
+        },
+      },
+    ).start({ cases: [cases[0]], limits: { ...limits, caseMinutes: 0.05 }, model: "orion" });
+    const state = await env.ledger.state();
+    expect(state.cases.map((c) => [c.stage, c.attempts])).toEqual([["accepted", 2]]);
   });
 
   it("takes a blocked claim that names a frozen test to the Planner, and goes on when it allows it", async () => {
@@ -399,6 +405,13 @@ describe("auto engine", () => {
 
   it("mutation-checks a task that freezes its tests, since it builds code too", async () => {
     const env = await setup();
+    const asked: Array<boolean | undefined> = [];
+    const recording: AutoVerifierPort = {
+      async verify(worktree, signal, run) {
+        asked.push(run?.stopOnFailure);
+        return verifier.verify(worktree, signal);
+      },
+    };
     const outcome = await engine(
       env,
       worker(async (i) => {
@@ -410,11 +423,14 @@ describe("auto engine", () => {
         await write(i.worktree, "test_keys.txt", "assert picks\n");
         return { finish: "done", summary: "wrote keys and its test" };
       }),
-      { mutationCheck: true },
+      { mutationCheck: true, verifier: recording },
     ).start(spec([{ ...cases[0], writesTests: true }]));
     expect(outcome).toBe("objective_met");
     const mutation = (await env.ledger.read()).find((e) => e.event.type === "mutation")?.event;
     expect(mutation).toMatchObject({ caseId: "C1", mutants: [{ path: "keys.js", line: 2 }] });
+    // Only the mutant's run stops at its first failing check; the case's own verification runs them all.
+    expect(asked.filter(Boolean)).toHaveLength(1);
+    expect(asked.filter((stop) => !stop).length).toBeGreaterThan(0);
   });
 
   it("sends a case back once when its checks miss a deliberate break, then accepts", async () => {
@@ -484,11 +500,70 @@ describe("auto engine", () => {
     let state = await env.ledger.state();
     expect(state.cases.map((c) => c.stage)).toEqual(["accepted", "pending"]);
     expect(state.ownerMessages?.map((m) => m.text)).toEqual(["Prefer small files."]);
-    // The same inbox entries are not taken again on resume.
-    expect(await run(false).resume()).toBe("objective_met");
+    // The same inbox entries are not taken again on resume, and the message still reaches later tasks.
+    const resumed: CaseAttemptInput[] = [];
+    expect(
+      await engine(
+        env,
+        worker(async (i) => {
+          await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+          return { finish: "done", summary: "wrote it" };
+        }, resumed),
+      ).resume(),
+    ).toBe("objective_met");
+    expect(resumed.map((i) => i.ownerNotes)).toEqual([["Prefer small files."]]);
     state = await env.ledger.state();
     expect(state.cases.map((c) => c.stage)).toEqual(["accepted", "accepted"]);
     expect((await env.ledger.read()).filter((e) => e.event.type === "inbox")).toHaveLength(2);
+  });
+
+  it("keeps what earlier cases learned across a resume", async () => {
+    const env = await setup();
+    const first = engine(
+      env,
+      worker(async (i) => {
+        await env.ledger.postInbox("pause");
+        await write(i.worktree, "c1.txt", "ok\n");
+        return { finish: "done", summary: "wrote it", learnings: ["Use the shared helper."] };
+      }),
+    );
+    expect(await first.start(spec())).toBe("cancelled_after_checkpoint");
+    const resumed: CaseAttemptInput[] = [];
+    expect(
+      await engine(
+        env,
+        worker(async (i) => {
+          await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+          return { finish: "done", summary: "wrote it" };
+        }, resumed),
+      ).resume(),
+    ).toBe("objective_met");
+    expect(resumed[0].learnings).toEqual(["Use the shared helper."]);
+  });
+
+  it("passes the owner's message to the running worker and to every later attempt", async () => {
+    const env = await setup();
+    const seen: CaseAttemptInput[] = [];
+    const heard: string[] = [];
+    const outcome = await engine(
+      env,
+      worker(async (i) => {
+        if (i.case.id === "C1") {
+          i.hearOwner?.((text) => heard.push(text));
+          await env.ledger.postInbox("message", "Keep the database code in src/lib/server.");
+          for (let n = 0; n < 200 && !heard.length; n++)
+            await new Promise((done) => setTimeout(done, 10));
+        }
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+        return { finish: "done", summary: "wrote it" };
+      }, seen),
+    ).start(spec());
+    expect(outcome).toBe("objective_met");
+    expect(heard).toEqual(["Keep the database code in src/lib/server."]);
+    expect(seen.map((i) => i.ownerNotes)).toEqual([
+      [],
+      ["Keep the database code in src/lib/server."],
+    ]);
   });
 
   it("works cases that join the board during the run, and refuses ones that depend on nothing known", async () => {
@@ -595,6 +670,32 @@ describe("auto engine", () => {
     expect(git(env.worktree, "log", "--format=%s")).toBe("base");
   });
 
+  it("tells later tasks what an abandoned one failed on, and names the frozen tests", async () => {
+    const env = await setup();
+    await write(env.worktree, "test_utils.txt", "helper\n");
+    git(env.worktree, "add", "test_utils.txt");
+    git(env.worktree, "commit", "-qm", "frozen helper");
+    const seen: CaseAttemptInput[] = [];
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(
+          i.worktree,
+          `${i.case.id.toLowerCase()}.txt`,
+          i.case.id === "C1" ? "BUG\n" : "ok\n",
+        );
+        return { finish: "done", summary: "wrote it" };
+      }, seen),
+      { frozenTests: ["test_utils.txt"] },
+    ).start(spec([cases[0], { ...cases[1], dependsOn: [] }]));
+    const later = seen.filter((i) => i.case.id === "C2");
+    expect(later).toHaveLength(1);
+    expect(later[0].learnings.join("\n")).toMatch(
+      /"first" was not accepted; its last failure: .*BUG in c1\.txt/,
+    );
+    expect(seen[0].frozenTests).toEqual(["test_utils.txt"]);
+  });
+
   it("reports accepted work when a later case is abandoned and nothing else can run", async () => {
     const env = await setup();
     const three = [...cases, { ...cases[1], id: "C3", title: "third", dependsOn: ["C2"] }];
@@ -697,6 +798,27 @@ describe("auto engine", () => {
     expect(outcome).toBe("objective_met");
     expect(seen[1].repairFindings).toContain(
       'You reported this case blocked: "turn limit reached"',
+    );
+  });
+
+  it("tells a worker blocked by its own new test that the test is its to correct", async () => {
+    const env = await setup();
+    const seen: CaseAttemptInput[] = [];
+    const outcome = await engine(
+      env,
+      worker(async (i) => {
+        if (i.attempt === 1) {
+          await write(i.worktree, "c1.test.txt", "expects the wrong sign\n");
+          return { finish: "blocked", blockedReason: "c1.test.txt contradicts the model" };
+        }
+        await write(i.worktree, "c1.test.txt", "ok\n");
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+        return { finish: "done" };
+      }, seen),
+    ).start(spec([cases[0]]));
+    expect(outcome).toBe("objective_met");
+    expect(seen[1].repairFindings).toContain(
+      "This case's own changes are not that: c1.test.txt. A test among them that expects the wrong result is this case's mistake",
     );
   });
 
@@ -859,6 +981,20 @@ describe("auto engine", () => {
     expect(state.endReason).toBe("stopped by the owner");
   });
 
+  it("ends with the runner's own reason when it, not the owner, asked to stop", async () => {
+    const env = await setup();
+    const outcome = await engine(
+      env,
+      worker(async (i) => {
+        await env.ledger.writeControl("stop_now", "disk-1", "the disk is nearly full");
+        await new Promise<void>((done) => i.signal.addEventListener("abort", () => done()));
+        return { finish: "none", error: "Worker interrupted." };
+      }),
+    ).start(spec());
+    expect(outcome).toBe("cancelled_after_checkpoint");
+    expect((await env.ledger.state()).endReason).toBe("the disk is nearly full");
+  });
+
   it("stops now during the checks too, deciding nothing on checks cut short", async () => {
     const env = await setup();
     let calls = 0;
@@ -965,6 +1101,50 @@ describe("auto engine", () => {
       }, seen),
     ).resume();
     expect(seen.map((i) => i.case.id)).toEqual(["C2"]);
+  });
+
+  it("starts no repair with under a tenth of the case allowance left", async () => {
+    // A third attempt began with 4 of 90 minutes left and could only report.
+    const env = await setup();
+    let now = new Date("2026-09-26T00:00:00Z");
+    const seen: CaseAttemptInput[] = [];
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, "c1.txt", "BUG\n");
+        now = new Date(now.getTime() + 55 * 60_000);
+        return { finish: "done" };
+      }, seen),
+      { clock: () => now, ledger: new AutoLedger(env.runDir, () => now) },
+    ).start(spec([cases[0]]));
+    expect(seen).toHaveLength(1);
+    const [only] = (await env.ledger.state()).cases;
+    expect(only.stage).toBe("abandoned");
+    expect(
+      (await env.ledger.read()).some(
+        (e) =>
+          e.event.type === "case_abandoned" && e.event.reason === "case allowance of 60 min used",
+      ),
+    ).toBe(true);
+  });
+
+  it("stops a first attempt at two thirds of the case, so its checks and a repair still fit", async () => {
+    // October: 12 of 15 cases abandoned on time used 80 of 90 minutes or more on their first attempt.
+    const env = await setup();
+    const start = new Date("2026-09-26T00:00:00Z");
+    let now = start;
+    const seen: CaseAttemptInput[] = [];
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, "c1.txt", i.attempt === 1 ? "BUG\n" : "fixed\n");
+        now = i.deadline;
+        return i.attempt === 1 ? { finish: "none", error: "stopped" } : { finish: "done" };
+      }, seen),
+      { clock: () => now, ledger: new AutoLedger(env.runDir, () => now) },
+    ).start(spec([cases[0]]));
+    expect(seen.map((i) => (i.deadline.getTime() - start.getTime()) / 60_000)).toEqual([40, 60]);
+    expect((await env.ledger.state()).cases[0].stage).toBe("accepted");
   });
 
   it("stops at the hard limit without resetting the worktree", async () => {
@@ -1101,6 +1281,30 @@ describe("auto engine", () => {
     const abandoned = (await env.ledger.state()).cases.find((c) => c.stage === "abandoned");
     expect(unfinishedLine("Grid", abandoned!)).toBe(
       "Grid (abandoned: case allowance of 0.005 min used) The worker's last report: StrictMode double-mounts the grid, which drops the focus",
+    );
+  });
+
+  it("tells the Planner what a case that ran out of time was last sent back for", async () => {
+    const env = await setup();
+    let calls = 0;
+    const w = worker(async (i) => {
+      if (++calls === 1) {
+        await write(i.worktree, "c1.txt", "BUG\n");
+        return { finish: "done", summary: "Wrote c1.txt; everything works" };
+      }
+      await write(i.worktree, "c2.txt", "BUG\n");
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      return { finish: "none", error: String(i.signal.reason) };
+    });
+    const quick = {
+      cases: [cases[0]],
+      limits: { ...limits, caseMinutes: 0.05 },
+      model: "orion",
+    };
+    await engine(env, w).start(quick);
+    const abandoned = (await env.ledger.state()).cases.find((c) => c.stage === "abandoned");
+    expect(unfinishedLine("first", abandoned!)).toMatch(
+      /^first \(abandoned: case allowance of 0\.05 min used\) It was last sent back for: .*BUG in c1\.txt,c2\.txt The worker's last report: Wrote c1\.txt/,
     );
   });
 
@@ -1490,6 +1694,45 @@ describe("auto preflight", () => {
     expect(seen).toBeUndefined();
   });
 
+  it("runs the base checks again when any test failed at the start, as a browser test did", async () => {
+    const env = await setup();
+    let runs = 0;
+    const flaky: AutoVerifierPort = {
+      async verify() {
+        const failing = ++runs === 1;
+        return {
+          passed: !failing,
+          commands: [
+            {
+              command: "npm test",
+              exitCode: failing ? 1 : 0,
+              output: failing
+                ? "  ✘  11 tests/e2e/oriented-previews.spec.ts:91:7 › oriented previews (TIFF)"
+                : "ok",
+            },
+          ],
+        };
+      },
+    };
+    await engine(
+      env,
+      worker(async (i) => {
+        await write(i.worktree, `${i.case.id.toLowerCase()}.txt`, "ok\n");
+        return { finish: "done" };
+      }),
+      { verifier: flaky, repairsBase: true },
+    ).start(spec());
+    const events = (await env.ledger.read()).map((e) => e.event);
+    expect(runs).toBeGreaterThanOrEqual(2);
+    expect(events.find((e) => e.type === "checks_rerun")).toMatchObject({
+      tests: ["tests/e2e/oriented-previews.spec.ts"],
+      passed: true,
+    });
+    expect(events.find((e) => e.type === "preflight" && e.phase === "checks")).toMatchObject({
+      passed: true,
+    });
+  });
+
   it("rebuilds a changed environment from setup when downloads are approved", async () => {
     const env = await setup();
     const preparer: AutoPreparePort = {
@@ -1643,7 +1886,7 @@ describe("auto preflight", () => {
       },
     };
     let refused = "";
-    const outcome = await engine(
+    await engine(
       env,
       worker(async (i) => {
         await write(join(i.worktree, "modules"), "runner.js", "always passes\n");
@@ -1877,8 +2120,31 @@ describe("failingLine", () => {
     );
   });
 
+  it("names cargo's failing test, not a passing test whose name says error", () => {
+    const output = [
+      "test report::tests::test_write_report_file_error ... ok",
+      "test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+      "test test_rejection_high_residual ... FAILED",
+      "thread 'test_rejection_high_residual' (185) panicked at tests/synthetic.rs:1880:5:",
+      "error: test failed, to rerun pass `--test synthetic`",
+    ].join("\n");
+    expect(failingLine(output)).toBe("test test_rejection_high_residual ... FAILED");
+  });
+
+  it("names rustc's first error, not a crate whose name says error", () => {
+    const output =
+      "   Compiling thiserror v1.0.69\nwarning: unused import\nerror[E0308]: mismatched types\n";
+    expect(failingLine(output)).toBe("error[E0308]: mismatched types");
+  });
+
   it("falls back to any line that mentions a failure", () => {
     expect(failingLine("ok\nbuild failed with 2 problems")).toBe("build failed with 2 problems");
+  });
+
+  it("names a formatter's first diff line when nothing mentions a failure", () => {
+    expect(failingLine("\nDiff in /work/src/tiff_out.rs:669:\n-    .unwrap();")).toBe(
+      "Diff in /work/src/tiff_out.rs:669:",
+    );
   });
 });
 

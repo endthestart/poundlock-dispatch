@@ -75,3 +75,12 @@ export const REMOTE = "http://controller.example:7331";
 export const LOOPBACK = "http://127.0.0.1:7331";
 // ok: dispatch-ts-plain-http-literal
 export const SECURE = "https://controller.example";
+
+export function shellDashC(): string[] {
+  // ruleid: dispatch-ts-shell-dash-c
+  spawn("bash", ["-c", command]);
+  // ruleid: dispatch-ts-shell-dash-c
+  const inContainer = ["exec", "name", "sh", "-c", command];
+  // ok: dispatch-ts-shell-dash-c
+  return [...inContainer, "-C", command];
+}

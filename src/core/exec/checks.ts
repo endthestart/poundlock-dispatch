@@ -22,6 +22,11 @@ export interface CheckRunOptions {
    * A plain non-zero exit never stops the run, so a review sees every failing check.
    */
   stopOnError?: boolean;
+  /**
+   * Stop at the first check that does not pass, failures included: for a
+   * question one failure answers, such as whether a mutant is caught.
+   */
+  stopOnFailure?: boolean;
   /** An executor error that ends the run (rethrown) rather than failing one check. */
   rethrow?: (error: unknown) => boolean;
   onCommand?: (command: string) => void;
@@ -50,12 +55,13 @@ export async function runChecks(
         output: "",
         error: error instanceof Error ? error.message : String(error),
       });
-      if (options.stopOnError) break;
+      if (options.stopOnError || options.stopOnFailure) break;
       continue;
     }
     const vacuous = result.exitCode === 0 && !result.error && ranNoTests(result.output);
     results.push({ command, ...result, ...(vacuous ? { error: VACUOUS_CHECK } : {}) });
     if (options.stopOnError && (result.error || vacuous)) break;
+    if (options.stopOnFailure && (result.exitCode !== 0 || result.error || vacuous)) break;
   }
   const passed =
     commands.length > 0 &&

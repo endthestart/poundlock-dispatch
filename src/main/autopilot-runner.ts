@@ -1,7 +1,7 @@
 /**
  * How the app starts Autopilot's runner (ADR 016, L26): the packaged app keeps
  * Electron's run-as-Node fuse off, so the runner is the installed terminal
- * client, `dispatch auto run <runDir>`, detached so it outlives the app. It
+ * client, `dispatch autopilot run <runDir>`, detached so it outlives the app. It
  * must be this app's version: the run's files are read by both.
  */
 import { execFile, spawn } from "node:child_process";
@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { AutoPaths } from "@core/auto/runs";
-import { autoBaseRoot } from "@core/data-root";
+import { autoBaseRoot, autoDockerContext } from "@core/data-root";
 import type { AutopilotFacilities } from "@core/host/autopilot";
 import { approvedHostToolDirectories } from "@core/host-tools";
 
@@ -18,7 +18,16 @@ const run = promisify(execFile);
 
 export function autopilotFacilities(appVersion: string): AutopilotFacilities {
   const home = homedir();
-  const cli = process.env.POUNDLOCK_DISPATCH_CLI || join(home, ".local", "bin", "dispatch");
+  // install-tui.sh writes ~/.local/bin/dispatch, or the --bin folder's, and always the
+  // copy beside the installed versions.
+  const installed = [
+    join(home, ".local", "bin", "dispatch"),
+    join(home, ".local", "share", "poundlock-dispatch", "tui", "dispatch"),
+  ];
+  const cli =
+    process.env.POUNDLOCK_DISPATCH_CLI ||
+    installed.find((path) => existsSync(path)) ||
+    installed[0];
   // A Finder-launched app has a bare PATH; the runner needs docker and git.
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -31,6 +40,7 @@ export function autopilotFacilities(appVersion: string): AutopilotFacilities {
     paths: new AutoPaths(autoBaseRoot()),
     home,
     dockerEnv: env,
+    dockerContext: autoDockerContext(),
     async checkRunner() {
       if (!existsSync(cli))
         throw new Error(
@@ -45,7 +55,7 @@ export function autopilotFacilities(appVersion: string): AutopilotFacilities {
     },
     spawnRunner(runDir) {
       const log = openSync(join(runDir, "runner.log"), "a", 0o600);
-      const child = spawn(cli, ["auto", "run", runDir], {
+      const child = spawn(cli, ["autopilot", "run", runDir], {
         detached: true,
         stdio: ["ignore", log, log],
         env,

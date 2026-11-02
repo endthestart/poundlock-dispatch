@@ -79,6 +79,59 @@ describe("execution role guessing", () => {
     expect(roleMapReady(roles)).toBe(true);
   });
 
+  it("suggests no disabled profile, and no worker on the manager's model slot", () => {
+    const local = (id: string, slot: string, status: "enabled" | "disabled" = "enabled") => ({
+      id,
+      name: id,
+      context_tokens: 32768,
+      max_output_tokens: 4096,
+      uses: ["interactive"],
+      dataDestination: "operator_network" as const,
+      occupancy: { kind: null, slot, node_id: slot.split("/")[0], runtime_profile: "llamacpp" },
+      status,
+    });
+    const roles = guessRoleMap({
+      interactiveModels: [
+        local("a-disabled", "orion/llamacpp", "disabled"),
+        local("b-manager", "orion/llamacpp"),
+        local("c-same-slot", "orion/llamacpp"),
+        local("d-other-machine", "vega/llamacpp"),
+      ],
+    });
+    expect(roles.manager?.profileName).toBe("b-manager");
+    expect(roles.interactive?.profileName).toBe("d-other-machine");
+  });
+
+  it("suggests the manager before autocomplete, and never an external worker or unpermitted manager", () => {
+    // UX review, 30 Oct: autocomplete took a one-model setup's only chat model, and the
+    // wizard offered an external worker to a token without external access.
+    const model = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      name: id,
+      context_tokens: 32768,
+      max_output_tokens: 4096,
+      uses: ["interactive"],
+      dataDestination: "operator_network" as const,
+      ...extra,
+    });
+    expect(
+      guessRoleMap({ interactiveModels: [model("both", { uses: ["interactive", "completion"] })] })
+        .manager?.profileName,
+    ).toBe("both");
+    const external = model("frontier", { dataDestination: "external" });
+    const local = model("local");
+    const roles = guessRoleMap({ interactiveModels: [external, local], permissions: [] });
+    expect(roles.manager?.profileName).toBe("local");
+    expect(roles.interactive).toBeUndefined();
+    expect(
+      guessRoleMap({ interactiveModels: [external], permissions: [] }).manager,
+    ).toBeUndefined();
+    expect(
+      guessRoleMap({ interactiveModels: [external], permissions: ["external:invoke"] }).manager
+        ?.profileName,
+    ).toBe("frontier");
+  });
+
   it("does not turn a gateway or provider name into escalation authority", () => {
     const interactiveModels = [
       {
@@ -171,8 +224,6 @@ describe("path-only folder projects", () => {
     expect(project.source.kind).toBe("local_folder");
     if (project.source.kind !== "local_folder") throw new Error("expected folder");
     expect(project.source.originalPath).toBe(await realpath(folder));
-    expect(project.source.includedFiles).toBe(0);
-    expect(project.source.originalFingerprint).toBe("");
     const listed = await listLiveProjectFiles(folder);
     expect(listed.some((file) => file.path === "app.ts")).toBe(true);
     expect(listed.some((file) => file.path.includes("node_modules"))).toBe(false);

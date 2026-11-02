@@ -26,7 +26,8 @@ function override(name, version) {
   return sources.find(
     (row) =>
       row.version === version &&
-      (row.package === name || (row.package.endsWith("/*") && name.startsWith(row.package.slice(0, -1)))),
+      (row.package === name ||
+        (row.package.endsWith("/*") && name.startsWith(row.package.slice(0, -1)))),
   );
 }
 
@@ -55,14 +56,19 @@ const paths = execFileSync("npm", ["ls", "--omit=dev", "--all", "--parseable"], 
 const seen = new Map();
 for (const path of paths) {
   const info = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
-  const license = typeof info.license === "string" ? info.license : (info.license?.type ?? "UNKNOWN");
+  const license =
+    typeof info.license === "string" ? info.license : (info.license?.type ?? "UNKNOWN");
   const key = `${info.name}@${info.version}`;
   if (!seen.has(key)) seen.set(key, { name: info.name, version: info.version, license, path });
 }
-const rows = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+const rows = [...seen.values()].sort(
+  (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
+);
 const undeclared = rows.filter((row) => row.license === "UNKNOWN" || row.license === "UNLICENSED");
 if (undeclared.length)
-  throw new Error(`No distributable license declaration: ${undeclared.map((r) => r.name).join(", ")}`);
+  throw new Error(
+    `No distributable license declaration: ${undeclared.map((r) => r.name).join(", ")}`,
+  );
 
 writeFileSync(
   join(root, "THIRD_PARTY_NOTICES.md"),
@@ -98,7 +104,14 @@ if (textsAt > 0) {
   if (missing.length) throw new Error(`Missing license text: ${missing.join(", ")}`);
   blocks.push("# Fonts and theme bundled with the app", "");
   for (const [name, license, path] of EMBEDDED)
-    blocks.push(`## ${name}`, "", `License: ${license}`, "", readFileSync(join(root, path), "utf8").trimEnd(), "");
+    blocks.push(
+      `## ${name}`,
+      "",
+      `License: ${license}`,
+      "",
+      readFileSync(join(root, path), "utf8").trimEnd(),
+      "",
+    );
   mkdirSync(dirname(process.argv[textsAt + 1]), { recursive: true });
   writeFileSync(process.argv[textsAt + 1], blocks.join("\n"));
 }

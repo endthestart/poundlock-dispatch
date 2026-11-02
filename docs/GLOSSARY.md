@@ -2,8 +2,8 @@
 
 This document defines approved vocabulary for the Poundlock Dispatch client. Terms are self-contained; aliases use identical profiles unless otherwise noted.
 
-- **Poundlock Dispatch**: Poundlock client family owning projects, conversations, plans, permissions and review across GUI and future CLI/TUI/editor surfaces. Lockkeep is the legacy implementation name.
-- **Poundlock Dispatch GUI**: The Electron desktop interface, packaged as `Poundlock Dispatch.app`. Version 0.1.1 migrates existing settings and projects by copying legacy data, retaining the original as a backup.
+- **Poundlock Dispatch**: Poundlock client family owning projects, conversations, plans, permissions and review across the desktop app, the terminal client and future editor surfaces. Lockkeep is the legacy implementation name.
+- **Poundlock Dispatch GUI**: The Electron desktop interface, packaged as `Poundlock Dispatch.app`.
 - **Client computer**: Machine running the Dispatch runtime and attached interactive Pi worker tools.
 - **Poundlock controller**: API/runtime scheduling service; not the project manager.
 - **Operator network**: Operator-controlled machines/network, including inference nodes such as a separate Mac. Avoid equating local with same computer.

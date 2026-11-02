@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { PaneBoundary } from "./pane-boundary";
 import "./styles.css";
 
 // Set before React renders so the very first paint is already themed: the
@@ -15,6 +16,8 @@ if (initialTheme && initialTheme !== "system") {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <PaneBoundary name="Dispatch">
+      <App />
+    </PaneBoundary>
   </StrictMode>,
 );

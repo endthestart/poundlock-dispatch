@@ -13,21 +13,14 @@ function project(): ProjectRecord {
     source: {
       kind: "local_folder",
       originalPath: "/tmp/example",
-      capturedAt: "now",
-      snapshotSha256: "",
       baseRevision: "",
-      includedFiles: 0,
-      includedBytes: 0,
       excludedPatterns: [],
-      includedUncommitted: true,
-      originalFingerprint: "",
     },
     policy: defaultPolicy(),
     budget: defaultBudget(),
-    integration: { headRevision: "", expectedBase: "", appliedPatchSha256: [] },
+    integration: {},
     planRevision: 0,
     managerSessionId: "manager",
-    eventCursor: 0,
   };
 }
 
@@ -64,6 +57,7 @@ describe("plan compiler", () => {
       {
         summary: "Build it",
         acceptanceCriteria: ["Tests pass"],
+        checks: [" cargo test ", ""],
         tasks: [
           {
             title: "Implement",
@@ -79,7 +73,9 @@ describe("plan compiler", () => {
       { defaultMode: "assist" },
     );
     expect(compiled.plan.compilerVersion).toBe(PLAN_COMPILER_VERSION);
+    // The manager's checks are a suggestion for the owner, never the project's commands.
     expect(compiled.plan.verificationCommands).toEqual(["npm test"]);
+    expect(compiled.plan.suggestedChecks).toEqual(["cargo test"]);
     expect(compiled.plan.allowDependencyDownloads).toBe(false);
     expect(compiled.plan.environmentNeed).toBe("none");
     expect(compiled.plan.authority).toMatch(/does not need package downloads/);

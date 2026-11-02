@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, isAbsolute, join, relative, sep } from "node:path";
-import { dnsProbeScript, hostProbeScript, vmFirewallCommand } from "./vm-firewall";
+import { colimaProfileOf, dnsProbeScript, hostProbeScript, vmFirewallFix } from "./vm-firewall";
 
 /**
  * Where an auto run's commands execute (ADR 014). Every command the model
@@ -429,6 +429,7 @@ export function dockerIsolation(given: DockerIsolationOptions): AutoIsolation {
   };
 
   const killAll = async () => {
+    // nosemgrep: dispatch-ts-shell-dash-c -- KILL_ALL is fixed text.
     await call(["exec", options.name, "sh", "-c", KILL_ALL], { timeoutMs: KILL_TIMEOUT_MS });
   };
   const setup = `${options.name}-setup`;
@@ -468,12 +469,12 @@ export function dockerIsolation(given: DockerIsolationOptions): AutoIsolation {
       const reached = probe.output.match(/REACHED:\S+/g);
       if (reached)
         throw new Error(
-          `A container in this VM can reach this Mac (${reached.join(", ").replaceAll("REACHED:", "")}), so setup with the network would expose its services. Apply Dispatch's VM firewall, then retry: ${vmFirewallCommand()}`,
+          `A container in this VM can reach this Mac (${reached.join(", ").replaceAll("REACHED:", "")}), so setup with the network would expose its services. Apply Dispatch's VM firewall, then retry: ${vmFirewallFix(options.context)}`,
         );
       // Otherwise every download times out, which reads as a broken project.
       if (/\bUNRESOLVED\b/.test(probe.output))
         throw new Error(
-          `Containers in this VM cannot look up names, so setup cannot download dependencies. Apply Dispatch's VM network rules, which point the VM at public DNS servers, then retry: ${vmFirewallCommand()}`,
+          `Containers in this VM cannot look up names, so setup cannot download dependencies. Apply Dispatch's VM network rules, which point the VM at public DNS servers, then retry: ${vmFirewallFix(options.context)}`,
         );
     } finally {
       listener.close();
@@ -492,7 +493,7 @@ export function dockerIsolation(given: DockerIsolationOptions): AutoIsolation {
         throw new Error(
           version.error?.includes("not installed")
             ? version.error
-            : `The container runtime is not answering${where}. Start its VM (auto mode's own: colima start --profile dispatch-auto), then try again.`,
+            : `The container runtime is not answering${where}. Start its VM${colimaProfileOf(options.context) ? ` (colima start --profile ${colimaProfileOf(options.context)})` : ""}, then try again.`,
         );
       const image = await call([
         "image",
@@ -547,6 +548,7 @@ export function dockerIsolation(given: DockerIsolationOptions): AutoIsolation {
             `The run's container could not be created: ${(created.error ?? created.output).trim()}`,
           );
       }
+      // nosemgrep: dispatch-ts-shell-dash-c -- fixed text, only proving bash is there.
       const shell = await call(["exec", options.name, "bash", "-c", "true"]);
       if (shell.code !== 0)
         throw new Error(`The image ${options.image} has no bash, which auto mode's commands need.`);
@@ -574,6 +576,9 @@ export function dockerIsolation(given: DockerIsolationOptions): AutoIsolation {
 
     async exec(command, exec) {
       const result = await call(
+        // The worker's own command line, run by design inside the run's isolated
+        // container; no host value is put into its text.
+        // nosemgrep: dispatch-ts-shell-dash-c
         ["exec", "-w", exec.cwd, "-e", "HOME=/tmp", options.name, "bash", "-c", command],
         {
           signal: exec.signal,

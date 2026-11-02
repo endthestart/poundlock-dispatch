@@ -107,7 +107,7 @@ describe("source layering", () => {
     expect(runtimeLayer("@runtime/host-command")).toBe(true);
     // A value import is caught; the erased type reference beside it is not.
     expect(importsOf("core/orchestration.ts")).not.toContain("@runtime/host-command");
-    expect(importsOf("main/index.ts")).toContain("@runtime/host-command");
+    expect(importsOf("runtime/host-factory.ts")).toContain("@runtime/host-command");
     expect(runtimeLayer("@core/orchestration")).toBe(false);
     expect(belowShared("@core/ids")).toBe(true);
     expect(belowShared("@shared/types")).toBe(false);

@@ -1,9 +1,4 @@
-import {
-  classifyAttemptFailure,
-  classifyLoopOutcome,
-  consumesEscalationBudget,
-  consumesRepairBudget,
-} from "@core/failure-class";
+import { classifyAttemptFailure, classifyLoopOutcome } from "@core/failure-class";
 import { isInfrastructureCode } from "@core/recovery";
 import type { AttemptRecord } from "@shared/types";
 import { describe, expect, it } from "vitest";
@@ -127,8 +122,6 @@ describe("Poundlock's own reason codes", () => {
       expect(classifyAttemptFailure({ code, error: "the job did not complete" })).toBe(
         "infrastructure",
       );
-      expect(consumesRepairBudget(classifyAttemptFailure({ code, error: "x" }))).toBe(false);
-      expect(consumesEscalationBudget(classifyAttemptFailure({ code, error: "x" }))).toBe(false);
     }
 
     // The three that never existed are gone, and a genuine code failure is

@@ -4,6 +4,7 @@ import {
   approvedRoutingRevision,
   effectiveDestination,
   interactiveUnavailableReason,
+  projectWorkerRoles,
   type RoleBinding,
   type RoleMap,
   routeRevisionChanged,
@@ -209,26 +210,6 @@ export function resolveStartingWorkerBinding(
   };
 }
 
-/**
- * The roles a project's workers run under: the app's, with the Worker role
- * replaced by the project's own choice when it has one. The ladder's further
- * rungs are unchanged.
- */
-export function projectWorkerRoles(
-  roles: RoleMap,
-  policy: Pick<ProjectRecord["policy"], "workerModel">,
-): RoleMap {
-  if (!policy.workerModel || policy.workerModel === roles.interactive?.profileId) return roles;
-  return {
-    ...roles,
-    interactive: {
-      profileId: policy.workerModel,
-      profileName: policy.workerModel,
-      source: "interactive",
-    },
-  };
-}
-
 export function resolveInteractiveWorkerProfile(
   models: InteractiveModel[],
   roles: RoleMap,
@@ -311,6 +292,22 @@ function resolveExplicitEscalation(
  * The profile for plan reviews and round-end verification: the Verifier role
  * when it is bound and eligible, otherwise none and the caller uses the worker.
  */
+/**
+ * The owner's local fallback, when Poundlock serves it on their own network;
+ * undefined otherwise, and then a spending refusal stops the work as before.
+ */
+export function localFallbackProfile(
+  models: InteractiveModel[],
+  roles: RoleMap,
+): InteractiveModel | undefined {
+  const binding = roles.fallback;
+  if (!binding?.profileId) return undefined;
+  const model = models.find((item) => matches(item, binding.profileId));
+  return model?.dataDestination === "operator_network" && !interactiveUnavailableReason(model)
+    ? model
+    : undefined;
+}
+
 export function resolveVerifierProfile(
   models: InteractiveModel[],
   roles: RoleMap,

@@ -1,4 +1,4 @@
-import type { Milestone, Requirement } from "./types.js";
+import type { Milestone, PlanRecord, Requirement } from "./types.js";
 
 /**
  * What is wrong with a plan's milestones (ADR 016), as sentences the manager
@@ -42,12 +42,36 @@ export function milestoneProblems(
   return problems;
 }
 
-/** The milestone a requirement belongs to, if any. */
-export function milestoneOf(milestones: Milestone[], requirementId: string): string | undefined {
-  const id = requirementId.trim().toUpperCase();
-  return milestones.find((item) =>
-    item.requirementIds.some((raw) => raw.trim().toUpperCase() === id),
-  )?.id;
+/**
+ * The milestones Autopilot works. A plan with requirements and none runs as
+ * one holding every requirement not waived, so that its Planner reviews the
+ * work: without it no verdict ran, and one run's checks all passed with its
+ * alignment inverted. That milestone is worked out each time and never
+ * saved, so the plan stays the manager's and later requirements join it.
+ */
+export function goalMilestones(
+  plan: Pick<PlanRecord, "summary" | "requirements" | "milestones">,
+): Milestone[] {
+  if (plan.milestones?.length) return plan.milestones;
+  const open = (plan.requirements ?? []).filter((item) => item.status !== "waived");
+  if (!open.length) return [];
+  return [
+    {
+      id: "M1",
+      title: "The whole plan",
+      goal: plan.summary,
+      requirementIds: open.map((item) => item.id),
+    },
+  ];
+}
+
+/** A task belongs to a milestone it names; in a plan without milestones, to the whole plan's. */
+export function inGoalMilestone(
+  task: { milestoneId?: string },
+  milestoneId: string,
+  plan: Pick<PlanRecord, "milestones">,
+): boolean {
+  return plan.milestones?.length ? task.milestoneId === milestoneId : true;
 }
 
 /**

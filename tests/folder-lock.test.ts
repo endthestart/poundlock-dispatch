@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
-import { FolderLock, lockBlockedMessage, STALE_AFTER_MS } from "@core/folder-lock";
+import { FolderLock, lockBlockedMessage } from "@core/folder-lock";
 import { DispatchHost } from "@core/host/dispatch-host";
 import { ProjectOrchestrator } from "@core/orchestration";
 import { ProjectLifecycle } from "@core/project-lifecycle";
@@ -44,15 +44,13 @@ async function lockFile(target: string): Promise<string> {
   return join(locks, `${createHash("sha256").update(canonical).digest("hex")}.json`);
 }
 
-/** A holder that is both long silent and definitely gone. */
+/** A holder whose process is definitely gone. */
 function abandoned() {
-  const when = new Date(Date.now() - 10 * STALE_AFTER_MS).toISOString();
   return {
     pid: 2 ** 22, // far above any pid this machine will allocate
     hostApp: "tui",
     dataRoot: "/data/tui",
-    startedAt: when,
-    heartbeatAt: when,
+    startedAt: new Date().toISOString(),
   };
 }
 
@@ -81,14 +79,14 @@ describe("folder lock", () => {
     expect((await lock("tui").acquire(join(folder, "."))).ok).toBe(false);
   });
 
-  it("reclaims a folder whose holder stopped heartbeating and no longer exists", async () => {
+  it("reclaims at once a folder whose holder no longer exists", async () => {
     await writeFile(await lockFile(folder), JSON.stringify(abandoned()), { mode: 0o600 });
     expect(await lock("gui").acquire(folder)).toEqual({ ok: true });
   });
 
   it("does not steal a lock from a live holder that has merely gone quiet", async () => {
-    // A process paused in a debugger stops heartbeating but is still working.
-    const frozen = lock("gui", () => new Date(Date.now() - 10 * STALE_AFTER_MS));
+    // A process paused in a debugger writes nothing but is still working.
+    const frozen = lock("gui", () => new Date(0));
     await frozen.acquire(folder);
     expect((await lock("tui").acquire(folder)).ok).toBe(false);
   });
@@ -100,19 +98,14 @@ describe("folder lock", () => {
     expect(await lock("tui").acquire(folder)).toEqual({ ok: true });
   });
 
-  it("renews its claim in place rather than taking a new one", async () => {
+  it("keeps its claim in place when the same folder is opened again", async () => {
     const gui = lock("gui");
     await gui.acquire(folder, { projectId: "proj-1" });
     // A lock this process holds is never reported as somebody else's.
     expect(await gui.heldBy(folder)).toBeUndefined();
-
-    await gui.heartbeat();
+    await gui.acquire(folder, { workflowId: "wf-1" });
     const written = JSON.parse(await readFile(await lockFile(folder), "utf8"));
-    expect(written.projectId).toBe("proj-1");
-    expect(written.pid).toBe(process.pid);
-    expect(new Date(written.heartbeatAt).getTime()).toBeGreaterThanOrEqual(
-      new Date(written.startedAt).getTime(),
-    );
+    expect(written).toMatchObject({ projectId: "proj-1", workflowId: "wf-1", pid: process.pid });
   });
 
   it("takes several folders as one unit, or none of them", async () => {
@@ -160,6 +153,24 @@ describe("the lock actually gates dispatch", () => {
     // Once the other client lets go, the same run proceeds.
     await holder.releaseAll();
     expect(await mine.acquire(fixture.folder)).toEqual({ ok: true });
+    await engine.tick(fixture.project.id);
+    expect(runs.length).toBeGreaterThan(0);
+  });
+
+  it("drives at once a folder whose holder died", async () => {
+    // A terminal opened 15 s after another crashed holding the folder, became a
+    // watcher, and then watched nobody until it was closed.
+    const fixture = await workflowFixture({ prefix: "dispatch-lock-takeover-" });
+    const { manager } = countingManager(fixture.store, { tasks: [planTask("Task one")] });
+    const { worker, runs } = recordingWorker();
+    await writeFile(await lockFile(fixture.folder), JSON.stringify(abandoned()), { mode: 0o600 });
+    const mine = new FolderLock(locks, { hostApp: "tui", dataRoot: "/data/tui" });
+    expect((await mine.acquire(fixture.folder)).ok).toBe(true);
+
+    const engine = engineFor(fixture, manager, worker, new ApprovalBroker(), mine);
+    await engine.sendMessage(fixture.project.id, "build it");
+    await engine.approvePlan(fixture.project.id);
+    await engine.start(fixture.project.id).catch(() => undefined);
     await engine.tick(fixture.project.id);
     expect(runs.length).toBeGreaterThan(0);
   });

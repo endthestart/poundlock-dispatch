@@ -2,13 +2,13 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import type { WorkerContext, WorkerPort } from "@core/interactive-worker";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import { type ManagerPort, ProjectOrchestrator, type ProposePlanInput } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { hostCommandPort } from "@runtime/host-command";
 import { workerBrief } from "@runtime/pi-worker";
 import { describe, expect, it } from "vitest";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 async function fixture() {

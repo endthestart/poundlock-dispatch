@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { dockerIsolation, IsolationUnavailableError } from "@core/auto/isolation";
 import type { CaseAttemptInput } from "@core/auto/ports";
 import { PoundlockClient } from "@core/poundlock";
-import { autoProject, caseBrief, createAutoWorker, lastNotes } from "@runtime/auto-session";
+import {
+  type AutoWorkerOptions,
+  autoProject,
+  caseBrief,
+  createAutoWorker,
+  lastNotes,
+} from "@runtime/auto-session";
 import {
   type AutoAttemptRecord,
   autoAttemptHooks,
@@ -265,6 +271,9 @@ describe("auto worker loop guards", () => {
 async function workerSetup(
   respond: (request: ChatRequest, index: number) => ScriptedTurn,
   checks = ["test -f done.txt"],
+  options: (
+    model: import("@shared/types").InteractiveModel,
+  ) => Partial<AutoWorkerOptions> = () => ({}),
 ) {
   const docker = await fakeDocker();
   const worktree = await realpath(await tempDir("auto-worker-tree-"));
@@ -300,6 +309,7 @@ async function workerSetup(
     allowDependencyDownloads: false,
     commandMs: 60_000,
     stallMs: 60_000,
+    ...options(model),
   });
   const input = (extra: Partial<CaseAttemptInput> = {}): CaseAttemptInput => ({
     case: {
@@ -313,6 +323,8 @@ async function workerSetup(
     sessionKey: "C1-session",
     fresh: true,
     learnings: [],
+    ownerNotes: [],
+    frozenTests: [],
     worktree,
     deadline: new Date(Date.now() + 10 * 60_000),
     signal: new AbortController().signal,
@@ -460,6 +472,38 @@ describe("auto worker through Poundlock", () => {
     }
   });
 
+  it("goes on, once, on the local fallback after a spending refusal, and keeps it", async () => {
+    const fallbacks: import("@shared/spending-limit").ModelFallback[] = [];
+    const finish = script();
+    const env = await workerSetup(
+      (request) => (request.model === "cloud-model" ? { status: 402 } : finish(request)),
+      undefined,
+      (model) => ({
+        model: { ...model, id: "cloud-model" },
+        fallback: model,
+        onFallback: (fallback) => {
+          fallbacks.push(fallback);
+        },
+      }),
+    );
+    try {
+      const refused = await env.worker.runCase(env.input());
+      // Handed back as a wait, so the engine continues the case at once.
+      expect(refused.inferenceUnavailable, refused.error).toBe(true);
+      expect(fallbacks.map((item) => [item.role, item.from, item.to])).toEqual([
+        ["worker", "cloud-model", "gate-model"],
+      ]);
+      const done = await env.worker.runCase(env.input({ attempt: 2, fresh: false }));
+      expect(done.finish, done.error).toBe("done");
+      expect(env.server.requests.filter((request) => request.model === "cloud-model")).toHaveLength(
+        1,
+      );
+      expect(fallbacks).toHaveLength(1);
+    } finally {
+      await env.server.close();
+    }
+  });
+
   it("reports a missing Poundlock as unavailable rather than as the model's failure", async () => {
     const env = await workerSetup(script());
     await env.server.close();
@@ -548,6 +592,8 @@ describe("auto worker through Poundlock", () => {
       sessionKey: "s",
       fresh: false,
       learnings: ["use the helper"],
+      ownerNotes: ["Keep the database code in src/lib/server."],
+      frozenTests: ["tests/stars.test.ts"],
       worktree: "/w",
       deadline: new Date(),
       signal: new AbortController().signal,
@@ -558,6 +604,9 @@ describe("auto worker through Poundlock", () => {
     );
     expect(repair).toContain("You may change only: src/.");
     expect(repair).toContain("- use the helper");
+    expect(repair).toContain("## The owner's notes for this run");
+    expect(repair).toContain("- Keep the database code in src/lib/server.");
+    expect(repair).toContain("run a formatter only on the files you change. tests/stars.test.ts.");
     expect(repair).toContain("## Your previous attempt was not accepted");
     const finalize = caseBrief({ ...base, finalize: true }, { checks: ["npm test"] });
     expect(finalize).toContain("## Time is up for this case");

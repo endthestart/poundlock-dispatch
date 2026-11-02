@@ -18,6 +18,12 @@
  */
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { approvalView } from "@shared/approval-view";
+import type { CaseStage } from "@shared/auto-run";
+import {
+  autopilotHoldsProject,
+  autopilotMessageHint,
+  autopilotOwnsStatus,
+} from "@shared/autopilot-card";
 import { composerSendBlocked } from "@shared/composer-guard";
 import { planApprovalLabel, type ToolApproval } from "@shared/permissions";
 import type { ActionControl, NextAction, ProjectStatusView } from "@shared/project-status";
@@ -28,13 +34,20 @@ import {
   projectStatusView,
 } from "@shared/project-status";
 import { reasoningLabel } from "@shared/reasoning";
-import { destinationLabel } from "@shared/roles";
+import { destinationLabel, managerChoice, projectWorkerRoles } from "@shared/roles";
 import { visibleComposerInfolets } from "@shared/status-infolets";
-import { projectStatusTone } from "@shared/status-tone";
+import { CARD_TONES, projectGlance, projectStatusTone } from "@shared/status-tone";
 import { stuckCategoryLabel } from "@shared/stuck-task";
-import { changedFiles, managerDecisionText, taskStateView } from "@shared/task-view";
+import {
+  autopilotBoard,
+  autopilotTaskView,
+  changedFiles,
+  managerDecisionText,
+  taskStateView,
+} from "@shared/task-view";
 import type { AppStateView, ChatMessage, ProjectSnapshot, TaskRecord } from "@shared/types";
 import { resolveTaskRoute } from "@shared/types";
+import { runBoardLines } from "./board-run.js";
 import {
   chip,
   clip,
@@ -53,6 +66,7 @@ import {
 } from "./chrome.js";
 import { type ColourRole, type Colours, PLAIN, roleForTone } from "./colour.js";
 import { COMMAND_DEFS } from "./commands.js";
+import { messageHead } from "./message-head.js";
 
 export { wrap } from "./chrome.js";
 
@@ -100,6 +114,8 @@ export function renderTranscript(
       const body = wrap(message.text, block - 2);
       const longest = Math.max(...body.map((line) => line.length), 0);
       const indent = " ".repeat(Math.max(0, width - longest - 2));
+      const head = messageHead(message);
+      lines.push(`${" ".repeat(Math.max(0, width - head.length))}${head}`);
       for (const line of body) lines.push(`${indent}▏ ${line}`);
       lines.push("");
       continue;
@@ -107,6 +123,7 @@ export function renderTranscript(
     // The manager speaks flush left, unmarked; anything else is machinery and
     // says so with a mark rather than a word.
     const marker = message.role === "manager" ? "" : "· ";
+    if (message.role === "manager") lines.push(messageHead(message));
     const body = wrap(message.text, width - marker.length);
     for (const [index, line] of body.entries())
       lines.push(index === 0 ? `${marker}${line}` : `${" ".repeat(marker.length)}${line}`);
@@ -120,6 +137,7 @@ export function renderTranscript(
   // become one. A different shape here would make the text appear to move when
   // the turn ends.
   if (draft?.trim()) {
+    lines.push(messageHead({ createdAt: "" }));
     for (const line of wrap(draft, width)) lines.push(line);
     lines.push("");
   }
@@ -147,19 +165,19 @@ function withCommands(colours: Colours, text: string): string {
 }
 
 /** A section's title and a quiet aside, above a rule. */
-function heading(colours: Colours, title: string, aside: string | undefined, width: number) {
+export function heading(colours: Colours, title: string, aside: string | undefined, width: number) {
   const left = colours.style("bold", colours.paint("accent", title));
   const right = aside ? colours.paint("faint", aside) : "";
   return [spread(left, right, width), rule(width, undefined, colours)];
 }
 
 /** A small heading inside a section: `Acceptance criteria`. */
-function subheading(colours: Colours, text: string): string {
+export function subheading(colours: Colours, text: string): string {
   return colours.style("bold", colours.paint("muted", text));
 }
 
 /** A list with hanging indents, so a wrapped item stays under its own first word. */
-function bulleted(colours: Colours, items: string[], width: number, marker = "•"): string[] {
+export function bulleted(colours: Colours, items: string[], width: number, marker = "•"): string[] {
   const lines: string[] = [];
   for (const item of items) {
     const body = wrap(item, Math.max(1, width - 4));
@@ -329,18 +347,23 @@ function checkRole(status: string): ColourRole {
  */
 function taskRows(
   task: TaskRecord,
-  snapshot: ProjectSnapshot,
+  number: number,
   width: number,
   colours: Colours,
+  stage?: CaseStage,
 ): string[] {
-  const view = taskStateView(task.status);
+  // A run's task shows where Autopilot has it, not where interactive work left it.
+  const view = stage ? autopilotTaskView(stage) : taskStateView(task.status);
   const role = roleForTone(view.tone);
   const attempt = task.attempts.at(-1);
   const titleRole: ColourRole | undefined = view.tone === "muted" ? "ended" : undefined;
-  const lines = wrap(task.title, Math.max(1, width - MARK_INDENT.length)).map((line, index) => {
-    const mark = index === 0 ? colours.paint(role, `[${TASK_MARK[view.icon]}]`) : "   ";
-    return `${mark} ${titleRole ? colours.paint(titleRole, line) : line}`;
-  });
+  // Numbered as `/task <number>` opens it.
+  const lines = wrap(`${number}. ${task.title}`, Math.max(1, width - MARK_INDENT.length)).map(
+    (line, index) => {
+      const mark = index === 0 ? colours.paint(role, `[${TASK_MARK[view.icon]}]`) : "   ";
+      return `${mark} ${titleRole ? colours.paint(titleRole, line) : line}`;
+    },
+  );
 
   const worker = IN_FLIGHT_OR_REVIEW.includes(task.status)
     ? attempt?.profileName || task.profileName
@@ -392,7 +415,8 @@ function taskRows(
   return lines;
 }
 
-function renderTasks(snapshot: ProjectSnapshot, width: number, colours: Colours): string[] {
+function renderTasks(state: AppStateView, width: number, colours: Colours): string[] {
+  const snapshot = state.snapshot!;
   const tasks = snapshot.tasks;
   if (!tasks.length) return ["No tasks yet. Describe what you want built."];
   const plan = snapshot.pendingBoard?.plan ?? snapshot.plan;
@@ -402,11 +426,24 @@ function renderTasks(snapshot: ProjectSnapshot, width: number, colours: Colours)
     undefined,
     width,
   );
+  const numbers = new Map(tasks.map((task, index) => [task.id, index + 1]));
+  const board = autopilotBoard(tasks, plan?.milestones ?? [], state.autopilot);
+  if (board)
+    return [
+      ...lines,
+      ...runBoardLines(
+        board,
+        (task, stage) => taskRows(task, numbers.get(task.id)!, width, colours, stage),
+        width,
+        colours,
+      ),
+    ];
   lines.push(colours.paint("muted", planProgressEvidence(tasks)), "");
-  for (const task of tasks) lines.push(...taskRows(task, snapshot, width, colours), "");
+  for (const task of tasks)
+    lines.push(...taskRows(task, numbers.get(task.id)!, width, colours), "");
   lines.push(
     ...wrap(
-      "[x] means the Project Manager accepted the work. Worker output is evidence; message the manager to change the plan.",
+      "[x] means the Project Manager accepted the work. /task <number> opens a task's evidence; message the manager to change the plan.",
       width,
     ).map((line) => colours.paint("faint", line)),
   );
@@ -471,7 +508,11 @@ export function renderTitleBar(
       "bold",
       colours.paint("accent", clip(project.name || project.id, Math.max(8, Math.floor(inner / 2)))),
     );
-    left = `${name}  ${chip(colours, roleForTone(tone), status.title ?? project.status)}`;
+    // While Autopilot's run is the project's latest work, its state is the project's state.
+    const glance = projectGlance(project, state.autopilotGlances);
+    left = glance
+      ? `${name}  ${chip(colours, roleForTone(CARD_TONES[glance.tone]), glance.label)}`
+      : `${name}  ${chip(colours, roleForTone(tone), status.title ?? project.status)}`;
   }
   // The longest phrase for the connection that fits beside the project; a dot alone if only that does.
   const option = [connection.long, connection.short].find(
@@ -534,6 +575,7 @@ export function renderBanner(
   // What the run wants next, unless a card on screen is already asking for it.
   if (
     status?.next &&
+    !autopilotOwnsStatus(state.autopilot, status.cause) &&
     !state.approvals?.length &&
     !status.canApprove &&
     !state.snapshot?.project.needsInput
@@ -584,6 +626,31 @@ function firstSentence(text: string): string {
  * loses the worker's name before it loses the manager's, and the progress
  * before the activity.
  */
+/** Why the manager is the model it is, in the desktop app's words for its manager line. */
+const MANAGER_ORIGIN = {
+  project: "project override",
+  local: "this computer",
+  fallback: "local fallback after a spending limit",
+  escalation: "model ladder",
+} as const;
+
+/** The manager this project's next turn uses: a run's own choice, else the project's, else the default. */
+function managerInUse(
+  state: AppStateView,
+  project: ProjectSnapshot["project"],
+): { name: string; origin: "default" | keyof typeof MANAGER_ORIGIN } | undefined {
+  const active =
+    state.managerSelection?.projectId === project.id ? state.managerSelection : undefined;
+  if (active) return { name: active.name, origin: active.origin };
+  const roles = state.connection.roles ?? {};
+  const choice = managerChoice(project, roles);
+  if (choice.origin !== "default") return { name: choice.fallbackName, origin: choice.origin };
+  const binding = roles.manager;
+  return binding
+    ? { name: binding.profileName || binding.profileId, origin: "default" }
+    : undefined;
+}
+
 export function renderStatusLines(
   state: AppStateView,
   width: number,
@@ -595,11 +662,20 @@ export function renderStatusLines(
   const project = state.snapshot?.project;
   if (!project) return ["", ""];
   const status = projectStatusView(state.snapshot!, { approvals: state.approvals });
-  const manager = state.connection.roles?.manager;
-  const worker = state.connection.roles?.interactive;
+  const manager = managerInUse(state, project);
+  // This project's own worker when it has one, as the run uses it; named as /models lists it.
+  const worker = projectWorkerRoles(state.connection.roles ?? {}, project.policy).interactive;
+  const workerName =
+    worker &&
+    (state.probe?.interactiveModels?.find(
+      (model) => model.profileId === worker.profileId || model.id === worker.profileId,
+    )?.id ??
+      (worker.profileName || worker.profileId));
 
   const activity = state.busy || state.activity ? state.activity || "working" : undefined;
-  const progress = showProgress ? status.evidence : "";
+  // While Autopilot owns the project its card says how far along it is; the app hides this too.
+  const progress =
+    showProgress && !autopilotOwnsStatus(state.autopilot, status.cause) ? status.evidence : "";
   let line1: string;
   if (activity) {
     const text = spinner ? `${spinner} ${activity}` : activity;
@@ -634,12 +710,13 @@ export function renderStatusLines(
     styled: `${colours.paint("faint", name)} ${value}`,
   });
   if (manager) {
-    const reasoning = project.reasoningOverride
-      ? ` (${reasoningLabel(project.reasoningOverride)})`
-      : "";
+    const notes = [
+      ...(manager.origin === "default" ? [] : [MANAGER_ORIGIN[manager.origin]]),
+      ...(project.reasoningOverride ? [reasoningLabel(project.reasoningOverride)] : []),
+    ];
     parts.push({
       rank: 0,
-      ...label("mgr", `${manager.profileName || manager.profileId}${reasoning}`),
+      ...label("mgr", `${manager.name}${notes.length ? ` (${notes.join(", ")})` : ""}`),
     });
   }
   if (state.watching)
@@ -648,7 +725,7 @@ export function renderStatusLines(
       text: "watching — another client drives",
       styled: colours.paint("review", "watching — another client drives"),
     });
-  if (worker) parts.push({ rank: 2, ...label("wrk", worker.profileName || worker.profileId) });
+  if (workerName) parts.push({ rank: 2, ...label("wrk", workerName) });
   for (const infolet of visibleComposerInfolets(state))
     parts.push({
       rank: 3,
@@ -718,6 +795,10 @@ export function composerHint(
     projectId: state.selectedProjectId,
   });
   if (blocked) return { text: blocked, blocked: true };
+  // While a run holds the project the host sends what is typed to it, not to the manager.
+  const phase = state.autopilot?.phase;
+  if (phase && autopilotHoldsProject(phase))
+    return { text: autopilotMessageHint(phase), blocked: false };
   return { text: status?.composerPlaceholder ?? "Describe what you want built.", blocked: false };
 }
 
@@ -894,7 +975,7 @@ export function renderBoard(state: AppStateView, width: number, colours: Colours
       "",
     );
   }
-  lines.push(...renderTasks(snapshot, width, colours));
+  lines.push(...renderTasks(state, width, colours));
   return { lines, hint: `[${KEY_HINTS.tasks}] back to the conversation` };
 }
 
@@ -987,6 +1068,14 @@ export function renderSetup(state: AppStateView, width: number, colours: Colours
     lines.push(
       `  ${colours.paint("faint", padTo(root.mode, 6))}${clip(root.path, Math.max(1, width - 8))}`,
     );
+
+  const readGrants = state.snapshot?.project.policy.readGrants ?? [];
+  lines.push("", subheading(colours, "Read exceptions"));
+  if (!readGrants.length)
+    lines.push(
+      `  ${colours.paint("muted", "none —")} ${withCommands(colours, "/grant-file <path>")}`,
+    );
+  for (const grant of readGrants) lines.push(`  ${clip(grant, Math.max(1, width - 2))}`);
 
   lines.push("", subheading(colours, "Next"));
   // Each sentence its own paragraph, so a command is never split from what it does by a wrap.

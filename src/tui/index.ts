@@ -8,31 +8,25 @@
  */
 import { realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, join, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import { AutoPaths } from "@core/auto/runs";
-import { migrateSharedConfig } from "@core/config-migration";
-import { autoBaseRoot, importTerminalProjects, terminalLegacyRoot } from "@core/data-root";
-import { FolderLock } from "@core/folder-lock";
-import { DispatchHost, type HostFacilities } from "@core/host/dispatch-host";
-import { ProjectOrchestrator } from "@core/orchestration";
+import { autoBaseRoot, autoDockerContext } from "@core/data-root";
+import type { DispatchHost, HostFacilities } from "@core/host/dispatch-host";
 import { defaultConfigRoot, defaultDataRoot } from "@core/paths";
-import { ProjectLifecycle } from "@core/project-lifecycle";
-import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
-import { createApprovalReviewer } from "@runtime/approval-reviewer";
-import { hostCommandPort } from "@runtime/host-command";
-import { createManagerProvider } from "@runtime/manager-provider";
-import { createPiWorker } from "@runtime/pi-worker";
+import { createDispatchHost } from "@runtime/host-factory";
+import { configureModelHttp } from "@runtime/model-http";
 import { configureSystemCertificateAuthorities } from "@runtime/system-ca";
 import { PI_VERSION, type ProjectRecord } from "@shared/types";
+import { terminalAlerts } from "./alerts.js";
 import { TuiApp } from "./app.js";
 import { type AutoCliDeps, runAuto, spawnDetachedRunner } from "./auto.js";
 import { runJobs } from "./jobs.js";
+import { askRestoreInTerminal, openFolder, type RestoreQuestion } from "./open-folder.js";
+import { type GitOpen, openGitProject, parseGitOpen, withoutGitFlags } from "./open-git.js";
+import { tuiPreferencesFile } from "./preferences.js";
 import { renderConversation } from "./render.js";
-
-/** ASCII BEL, written as a code point so it is visible in source. */
-const BELL = String.fromCharCode(7);
 
 /**
  * Projects, sessions and manager notes: the desktop app's root, shared by both
@@ -42,27 +36,10 @@ function tuiDataRoot(): string {
   return process.env.POUNDLOCK_DISPATCH_DATA_DIR || defaultDataRoot();
 }
 
-/** Auto-mode and Autopilot runs stay where the auto VM mounts them. */
-/**
- * The project for this folder, created on first use. Identity stays an opaque
- * id keyed by the folder's real path, so renaming the folder loses the
- * manager's history rather than silently starting a new project under it.
- */
-async function openFolder(store: FileStore, folder: string): Promise<ProjectRecord> {
-  const root = resolve(folder);
-  const existing = (await store.listProjects()).find(
-    (project) =>
-      project.source.kind === "local_folder" &&
-      project.source.originalPath === root &&
-      !project.archived &&
-      !project.removing,
-  );
-  if (existing) return existing;
-  return createFolderProject({ store, folder: root });
-}
-
 export interface StartOptions {
   folder: string;
+  /** A Git repository project instead of a folder (`--git`). */
+  git?: GitOpen;
   /** Print one state and exit, for scripts and for checking on a run. */
   json?: boolean;
 }
@@ -70,27 +47,23 @@ export interface StartOptions {
 function parseArgs(argv: string[]): StartOptions {
   const args = argv.filter((value) => value !== "--");
   const json = args.includes("--json");
+  const git = parseGitOpen(args);
   // `npm --prefix <dispatch> run tui` runs from the package folder; npm keeps
   // the folder it was started in as INIT_CWD, and that is the one meant.
   const folder =
-    args.find((value) => !value.startsWith("-")) ?? process.env.INIT_CWD ?? process.cwd();
-  return { folder, json };
+    withoutGitFlags(args).find((value) => !value.startsWith("-")) ??
+    process.env.INIT_CWD ??
+    process.cwd();
+  return { folder, json, ...(git ? { git } : {}) };
 }
 
-async function buildHost(folder: string): Promise<{ host: DispatchHost; project: ProjectRecord }> {
+async function buildHost(
+  folder: string,
+  restore?: RestoreQuestion,
+  git?: GitOpen,
+): Promise<{ host: DispatchHost; project: ProjectRecord }> {
   const store = new FileStore(tuiDataRoot(), defaultConfigRoot());
   await store.init();
-  // This machine's connection may still sit in the desktop app's data
-  // directory, from before there was a second client. Move it to the shared
-  // config rather than asking for a token that already exists here.
-  migrateSharedConfig(store.layout) || migrateSharedConfig(store.layout, terminalLegacyRoot());
-  if (!process.env.POUNDLOCK_DISPATCH_DATA_DIR) {
-    const moved = await importTerminalProjects(store);
-    if (moved?.imported.length)
-      process.stderr.write(
-        `Dispatch now keeps the terminal's projects with the desktop app's. Copied ${moved.imported.length} from ${terminalLegacyRoot()}; the originals are untouched.\n`,
-      );
-  }
   const approvals = new ApprovalBroker(() => {
     void host.emitState();
   });
@@ -98,37 +71,28 @@ async function buildHost(folder: string): Promise<{ host: DispatchHost; project:
     dataRoot: tuiDataRoot(),
     // A terminal has no dialogs. Folders are named on the command line and
     // files are granted with a path, so nothing here needs a picker.
-    notifyNeedsYou: () => process.stdout.write(BELL),
+    ...terminalAlerts(
+      () => host,
+      (text) => void process.stdout.write(text),
+      tuiPreferencesFile(tuiDataRoot()),
+    ),
     // This program is the runner, so it needs no version check; the host uses
     // these to keep interactive work off a project Autopilot is building.
     autopilot: {
       paths: new AutoPaths(autoBaseRoot()),
+      dockerContext: autoDockerContext(),
       checkRunner: async () => undefined,
       spawnRunner: (runDir) => spawnDetachedRunner(process.argv[1], runDir),
     },
   };
-  const host: DispatchHost = new DispatchHost(facilities, store, approvals, {
-    worker: () => createPiWorker(),
-    folderLock: new FolderLock(join(defaultConfigRoot(), "locks"), {
-      hostApp: "tui",
-      dataRoot: tuiDataRoot(),
-    }),
-    reviewAction: (created) => createApprovalReviewer(created),
-    managerProvider: (wiring) =>
-      createManagerProvider(
-        wiring.getStore,
-        wiring.approvals,
-        async (text, projectId) => {
-          wiring.recordActivity(text, projectId);
-        },
-        wiring.onSelection,
-        wiring.capabilities,
-      ),
-    orchestrator: (deps) => new ProjectOrchestrator({ ...deps, hostCommands: hostCommandPort }),
-    lifecycle: (deps) => new ProjectLifecycle(deps),
+  const host: DispatchHost = createDispatchHost(facilities, store, approvals, {
+    hostApp: "tui",
+    dataRoot: tuiDataRoot(),
   });
-  const project = await openFolder(store, folder);
+  // A folder's project exists before the host starts; a repository is cloned by the started host.
+  const local = git ? undefined : await openFolder(store, folder, restore);
   await host.start();
+  const project = local ?? (await openGitProject(host, store, git!));
   await host.selectProject(project.id);
   return { host, project };
 }
@@ -185,6 +149,8 @@ async function autoCommand(args: string[]): Promise<number> {
 
 const USAGE = `Usage: dispatch [folder]          Open a folder as a project (default: this folder).
        dispatch [folder] --json   Print the project's state and exit.
+       dispatch --git <https url> --branch <name|commit> [--account github|gitea]
+                                  Open a Git repository as a project; cloned the first time.
        dispatch autopilot <command>  Build an approved plan unattended. --help lists its commands.
                                   (dispatch auto is the same, for one more release.)
        dispatch jobs <command>    Durable Poundlock jobs. dispatch jobs --help lists them.
@@ -200,6 +166,23 @@ function version(): string {
   }
 }
 
+/**
+ * Leave the way the second Ctrl+C does. SIGHUP is the terminal window closing:
+ * without it the client died holding the folder lock, and the next client
+ * opened in that folder only watched. The terminal is gone by then, so a
+ * failed write to it must not end the process before the host shuts down.
+ */
+export function closeOnSignals(
+  close: () => void,
+  target: Pick<NodeJS.Process, "on" | "stdout"> = process,
+): void {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) target.on(signal, close);
+  target.on("SIGHUP", () => {
+    target.stdout.on("error", () => {});
+    close();
+  });
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "--version" || argv[0] === "-v") {
     process.stdout.write(`Poundlock Dispatch ${version()} (Pi ${PI_VERSION})\n`);
@@ -210,6 +193,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
   configureSystemCertificateAuthorities();
+  configureModelHttp();
   if (argv[0] === "autopilot" || argv[0] === "auto") {
     process.exitCode = await autoCommand(argv.slice(1));
     return;
@@ -229,8 +213,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const clearOpening = () => {
     if (interactive) process.stdout.write("\r\x1b[2K");
   };
-  if (interactive) process.stdout.write(`Opening ${basename(resolve(options.folder))}…`);
-  const { host } = await buildHost(options.folder).catch((error: unknown) => {
+  if (interactive)
+    process.stdout.write(
+      `Opening ${options.git ? options.git.repository : basename(resolve(options.folder))}…`,
+    );
+  const restore: RestoreQuestion | undefined = interactive
+    ? async (archived) => {
+        clearOpening();
+        return askRestoreInTerminal()(archived);
+      }
+    : undefined;
+  const { host } = await buildHost(options.folder, restore, options.git).catch((error: unknown) => {
     clearOpening();
     throw error;
   });
@@ -251,12 +244,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
-  const app = new TuiApp(host, undefined, undefined, undefined, autoDeps());
-  const close = () => {
+  const app = new TuiApp(
+    host,
+    undefined,
+    undefined,
+    undefined,
+    autoDeps(),
+    tuiPreferencesFile(tuiDataRoot()),
+  );
+  closeOnSignals(() => {
     void app.stop().then(() => process.exit(0));
-  };
-  process.on("SIGINT", close);
-  process.on("SIGTERM", close);
+  });
   await app.start();
 }
 

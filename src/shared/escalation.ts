@@ -51,16 +51,11 @@ export function validateEscalationSettings(value: EscalationSettings): Escalatio
   }
   return {
     profiles: value.profiles.map(
-      ({ profileId, profileName, source, routingRevision, lastApprovedRoutingRevision }) => ({
+      ({ profileId, profileName, source, lastApprovedRoutingRevision }) => ({
         profileId,
         profileName,
         source,
-        ...(lastApprovedRoutingRevision || routingRevision
-          ? {
-              lastApprovedRoutingRevision: lastApprovedRoutingRevision ?? routingRevision,
-              routingRevision: lastApprovedRoutingRevision ?? routingRevision,
-            }
-          : {}),
+        ...(lastApprovedRoutingRevision ? { lastApprovedRoutingRevision } : {}),
       }),
     ),
     mode: value.mode,

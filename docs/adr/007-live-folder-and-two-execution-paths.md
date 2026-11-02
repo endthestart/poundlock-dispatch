@@ -1,6 +1,8 @@
 # ADR 007 — Live folder path; interactive inference and durable jobs
 
-Status: Accepted, 2026-09-11.
+Status: Accepted, 2026-09-11. Amended by [ADR 016](016-autopilot-goal-engine.md):
+Autopilot is a third path, and durable jobs are no longer chosen automatically; they
+are run by hand with `dispatch jobs`.
 
 ## Decision
 

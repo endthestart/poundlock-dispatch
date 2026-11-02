@@ -40,6 +40,25 @@ describe("TranscriptView", () => {
     expect(draftLines).toEqual(finalLines);
   });
 
+  it("heads each message with the reasoning the turn set and when, not with a speaker", () => {
+    const at = "2026-10-28T14:05:00.000Z";
+    const when = new Date(at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    const transcript = view();
+    transcript.sync(
+      [
+        { id: "m1", role: "user", text: "Build the survey tool", createdAt: at },
+        { id: "m2", role: "manager", text: "Planning it.", createdAt: at, reasoning: "high" },
+        { id: "m3", role: "manager", text: "Done.", createdAt: at, reasoning: "model_default" },
+      ] as ChatMessage[],
+      undefined,
+    );
+    const lines = transcript.render(WIDTH).map((line) => stripTerminalSequences(line));
+    expect(lines.find((line) => line.trim() === when)).toMatch(/^ +\S/);
+    expect(lines).toContain(`Reasoning: high · ${when}`);
+    expect(lines).toContain(when);
+    expect(lines.join("\n")).not.toMatch(/You|Project Manager/);
+  });
+
   it("adds a row for a new message id and leaves the rest alone", () => {
     const transcript = view();
     const first: ChatMessage = { id: "m1", role: "user", text: "hi", createdAt: "" };
@@ -119,5 +138,47 @@ describe("TranscriptView", () => {
     expect(rendered).toContain("╭─ sh");
     expect(rendered).toMatch(/│ .*npm test/);
     expect(rendered).toContain("╰─");
+  });
+
+  describe("Normal and Verbose", () => {
+    const messages = [
+      { id: "u1", role: "user", text: "Build it.", createdAt: "2026-10-28T10:00:00.000Z" },
+      {
+        id: "m1",
+        role: "manager",
+        text: "Planned.",
+        createdAt: "2026-10-28T10:05:00.000Z",
+        toolTrace: [
+          { name: "read_project_file", summary: "Read package.json" },
+          { name: "list_project_files", summary: "Listing failed", error: true },
+        ],
+      },
+    ] as ChatMessage[];
+    const entries = [
+      { at: "2026-10-28T10:01:00.000Z", text: "Reading the folder" },
+      { at: "2026-10-28T10:02:00.000Z", text: "Drafting the plan" },
+    ];
+    const shown = (density: "normal" | "verbose") => {
+      const transcript = view();
+      transcript.sync(messages, undefined, density, { entries });
+      return stripTerminalSequences(transcript.render(WIDTH).join("\n"));
+    };
+
+    it("keeps one update between messages and folds the steps into their names", () => {
+      const normal = shown("normal");
+      expect(normal).not.toContain("Reading the folder");
+      expect(normal.indexOf("Drafting the plan")).toBeGreaterThan(normal.indexOf("Build it."));
+      expect(normal.indexOf("Drafting the plan")).toBeLessThan(normal.indexOf("Planned."));
+      expect(normal).toContain("· read_project_file, list_project_files!");
+      expect(normal).not.toContain("Read package.json");
+    });
+
+    it("shows every update and each step's summary", () => {
+      const verbose = shown("verbose");
+      expect(verbose).toContain("Reading the folder");
+      expect(verbose).toContain("Drafting the plan");
+      expect(verbose).toContain("· Read package.json");
+      expect(verbose).toContain("! Listing failed");
+    });
   });
 });

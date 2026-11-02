@@ -57,22 +57,15 @@ it("asks to resume when a paused run still has a task in review", () => {
       source: {
         kind: "local_folder",
         originalPath: "/tmp",
-        capturedAt: "t",
-        snapshotSha256: "x",
         baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
         excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
       },
       policy: defaultPolicy(),
       budget: defaultBudget(),
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
+      integration: {},
       planRevision: 6,
       workflowId: "w",
       managerSessionId: "m",
-      eventCursor: 0,
     },
     plan: {
       revision: 6,
@@ -125,78 +118,6 @@ it("covers an empty or idle board", () => {
   expect(planProgressEvidence(tasks("running"))).toBe("Task 1 of 1 started.");
 });
 
-it("rescues a legacy exhausted-budget dead end with a stuck-task decision card instead of Resume", () => {
-  const snapshot = {
-    project: {
-      id: "p",
-      name: "recipe-box",
-      archived: false,
-      createdAt: "t",
-      updatedAt: "t",
-      status: "paused" as const,
-      source: {
-        kind: "local_folder" as const,
-        originalPath: "/tmp",
-        capturedAt: "t",
-        snapshotSha256: "x",
-        baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
-        excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
-      },
-      policy: defaultPolicy(),
-      budget: {
-        ...defaultBudget(),
-        stopReason: "Recovery budget exhausted for “Audit”. Remaining results are kept.",
-      },
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
-      planRevision: 6,
-      workflowId: "w",
-      managerSessionId: "m",
-      eventCursor: 0,
-    },
-    plan: {
-      revision: 6,
-      summary: "Day 4",
-      acceptanceCriteria: [],
-      authority: "docs",
-      approved: true,
-      createdAt: "t",
-    },
-    tasks: [
-      {
-        id: "t1",
-        title: "Audit",
-        objective: "Audit",
-        workerPrompt: "Audit",
-        acceptanceCriteria: "Written",
-        dependsOn: [],
-        difficulty: "small" as const,
-        contextNote: "",
-        status: "failed" as const,
-        repairCount: 0,
-        attempts: [],
-      },
-    ],
-    messages: [],
-  };
-  const view = projectStatusView(snapshot);
-  // A pre-Phase-1 project stuck at the old "budget exhausted" dead end gets a
-  // stuck-task decision card, not a dead "Work stopped" message: Retry task
-  // is offered, Resume never is (it would just re-throw the same stop).
-  expect(view.cause).toBe("stuck_task");
-  expect(view.title).toBe("A task needs your direction");
-  expect(view.next).toMatch(/interrupted too many times/);
-  expect(view.next).not.toMatch(/budget/i);
-  expect(view.canResume).toBe(false);
-  expect(view.canOverride).toBe(false);
-  expect(view.actions).toContainEqual(
-    expect.objectContaining({ id: "retry_task", taskId: "t1", primary: true }),
-  );
-});
-
 it("shows the stuck-task decision card when the manager ends a review without choosing", () => {
   const snapshot = {
     project: {
@@ -210,22 +131,15 @@ it("shows the stuck-task decision card when the manager ends a review without ch
       source: {
         kind: "local_folder" as const,
         originalPath: "/tmp",
-        capturedAt: "t",
-        snapshotSha256: "x",
         baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
         excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
       },
       policy: defaultPolicy(),
       budget: defaultBudget(),
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
+      integration: {},
       planRevision: 6,
       workflowId: "w",
       managerSessionId: "m",
-      eventCursor: 0,
     },
     plan: {
       revision: 6,
@@ -285,21 +199,14 @@ it("gives a changed route the specific Settings instruction, from the structured
       source: {
         kind: "local_folder",
         originalPath: "/tmp",
-        capturedAt: "t",
-        snapshotSha256: "x",
         baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
         excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
       },
       policy: defaultPolicy(),
       budget: defaultBudget(),
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
+      integration: {},
       planRevision: 1,
       managerSessionId: "m",
-      eventCursor: 0,
       needsInput: {
         question:
           "The authorized worker route changed in Poundlock. Review its destination before retrying.",
@@ -330,21 +237,14 @@ it("keeps a manager question with options a question, answered on its card or in
       source: {
         kind: "local_folder",
         originalPath: "/tmp",
-        capturedAt: "t",
-        snapshotSha256: "x",
         baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
         excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
       },
       policy: defaultPolicy(),
       budget: defaultBudget(),
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
+      integration: {},
       planRevision: 1,
       managerSessionId: "m",
-      eventCursor: 0,
       needsInput: {
         question: "Which scope comes first?",
         askedAt: "t",
@@ -375,21 +275,14 @@ it("offers only read on a folder card that asked for read", () => {
       source: {
         kind: "local_folder",
         originalPath: "/tmp",
-        capturedAt: "t",
-        snapshotSha256: "x",
         baseRevision: "x",
-        includedFiles: 1,
-        includedBytes: 1,
         excludedPatterns: [],
-        includedUncommitted: false,
-        originalFingerprint: "x",
       },
       policy: defaultPolicy(),
       budget: defaultBudget(),
-      integration: { headRevision: "x", expectedBase: "x", appliedPatchSha256: [] },
+      integration: {},
       planRevision: 1,
       managerSessionId: "m",
-      eventCursor: 0,
       needsInput: {
         question: "May this project read /src/other?",
         askedAt: "t",
@@ -418,4 +311,35 @@ it("lets Resume continue past the manager-turn cap", () => {
     }),
   ).toBe(false);
   expect(runStopBlocksResume({ budget: { stopReason: "Cancelled by you." } })).toBe(true);
+});
+
+it("says an approved plan with no tasks yet needs Autopilot or the manager, not Resume", () => {
+  // UX review, 30 Oct: it said "Resume the approved work" with no Resume on screen.
+  const project = {
+    id: "p",
+    name: "sky",
+    archived: false,
+    createdAt: "t",
+    updatedAt: "t",
+    status: "idle",
+    source: { kind: "local_folder", originalPath: "/tmp", baseRevision: "x", excludedPatterns: [] },
+    policy: defaultPolicy(),
+    budget: defaultBudget(),
+    integration: {},
+    planRevision: 1,
+    workflowId: "w",
+    managerSessionId: "m",
+  } as const;
+  const plan = {
+    revision: 1,
+    summary: "Sky planner",
+    acceptanceCriteria: [],
+    authority: "owner",
+    approved: true,
+    createdAt: "t",
+  };
+  const view = projectStatusView({ project, plan, tasks: [], messages: [] } as never);
+  expect(view.title).toBe("Plan approved");
+  expect(view.next).toMatch(/Build it with Autopilot, or ask the manager/);
+  expect(view.actions.find((action) => action.primary)?.id).toBe("send_message");
 });

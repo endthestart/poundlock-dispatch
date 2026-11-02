@@ -24,7 +24,7 @@ export function storeBoard(
     async addTasks(
       given: PlannedTask[],
       milestone: Milestone,
-      options: { frozenChanges?: boolean } = {},
+      options: { gates?: boolean } = {},
     ): Promise<TaskRecord[]> {
       // Titles name dependencies: the checks trimmed them, so the board does too.
       const planned = given.map((task) => ({
@@ -61,7 +61,8 @@ export function storeBoard(
             taskKind: "closed_implementation",
             route: "interactive",
             requirementIds: task.requirementIds,
-            milestoneId: milestone.id,
+            // A plan without milestones keeps none: its whole-plan milestone is not saved.
+            ...(plan.milestones?.length ? { milestoneId: milestone.id } : {}),
             ...(task.filesToTouch?.length ? { filesToTouch: task.filesToTouch } : {}),
             ...(task.writesTests ? { writesTests: true } : {}),
             dependsOn: (task.dependsOn ?? []).map((title) => renamed.get(title) ?? title),
@@ -79,13 +80,20 @@ export function storeBoard(
         repairCount: 0,
         attempts: [],
       }));
-      // Frozen tests a task may change, only where the Planner's verdicts count.
-      if (options.frozenChanges) {
+      // Acceptance tests, and frozen tests a task may change, only where the Planner's verdicts count.
+      if (options.gates) {
         const byTitle = new Map(
           planned.map((task) => [renamed.get(task.title) ?? task.title, task]),
         );
         for (const record of records) {
           const plannedTask = byTitle.get(record.title);
+          if (plannedTask?.references?.length)
+            record.references = plannedTask.references.map((entry) => ({ ...entry }));
+          if (plannedTask?.acceptanceTests?.length)
+            record.acceptanceTests = plannedTask.acceptanceTests.map((test) => ({
+              path: test.path.trim(),
+              content: test.content,
+            }));
           if (!plannedTask?.changesFrozenTests?.length) continue;
           record.frozenTestsToChange = [...plannedTask.changesFrozenTests];
           if (plannedTask.frozenChangeReason)

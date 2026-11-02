@@ -20,6 +20,12 @@ const FEATURES = [
   "verifier_toolchain",
 ];
 
+/** As Poundlock publishes them in capabilities (`permission_labels`). */
+const TOKEN_PERMISSIONS = [
+  { code: "models:read", label: "List available models" },
+  { code: "inference:invoke", label: "Send inference requests" },
+];
+
 function poundlockFetch(options: {
   jobPermissions?: string[];
   modelsRead?: boolean;
@@ -29,6 +35,8 @@ function poundlockFetch(options: {
   jobOptionsForbidden?: boolean;
   /** null: a controller with no capabilities endpoint. */
   capabilities?: Record<string, unknown> | null;
+  /** Lists external models, and whether the token may call them; the first can be disabled. */
+  external?: { allowed: boolean; firstDisabled?: boolean };
 }): typeof fetch {
   const jobPermissions = options.jobPermissions ?? ["jobs:read", "jobs:submit", "jobs:cancel"];
   const modelsRead = options.modelsRead ?? true;
@@ -63,7 +71,12 @@ function poundlockFetch(options: {
     if (url.endsWith("/api/v1/capabilities")) {
       if (options.capabilities === null) return json({ error: { message: "not found" } }, 404);
       return json(
-        options.capabilities ?? { api_major: 1, contract_revision: 5, features: FEATURES },
+        options.capabilities ?? {
+          api_major: 1,
+          contract_revision: 5,
+          features: FEATURES,
+          token_permissions: TOKEN_PERMISSIONS,
+        },
       );
     }
     if (url.endsWith("/api/v1/usage")) {
@@ -80,7 +93,37 @@ function poundlockFetch(options: {
           401,
         );
       }
-      return json({ object: "list", data: [{ id: "coding" }] });
+      return json({
+        object: "list",
+        data: [
+          { id: "coding" },
+          ...(options.external
+            ? [
+                { id: "retired", data_destination: "external" },
+                { id: "frontier", data_destination: "external" },
+              ]
+            : []),
+        ],
+      });
+    }
+    if (method === "POST" && url.endsWith("/api/v1/access/preflight")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+      // Poundlock answers a disabled model before it checks the external permission.
+      if (body.model === "retired" && options.external?.firstDisabled)
+        return json({
+          availability: "blocked",
+          blocked_reason: "model_disabled",
+          operation: "inference",
+        });
+      return json(
+        options.external?.allowed
+          ? { availability: "available", operation: "inference" }
+          : {
+              availability: "blocked",
+              blocked_reason: "external_permission_required",
+              operation: "inference",
+            },
+      );
     }
     if (method === "POST" && url.endsWith("/v1/chat/completions")) {
       const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
@@ -278,9 +321,67 @@ describe("Poundlock connection probe", () => {
     const probe = await client.probe();
     expect(probe.ok).toBe(false);
     expect(probe.missingPermissions).toEqual(["models:read", "inference:invoke"]);
-    expect(probe.hint).toContain("List available models");
-    expect(probe.hint).toContain("Send inference requests");
-    expect(probe.hint).not.toContain("models:read");
+    expect(probe.hint).toBe(
+      "In Poundlock Access, edit this application token and tick “List available models”, “Send inference requests”, then test the connection again.",
+    );
+  });
+
+  it("believes the permissions the controller says the token holds", async () => {
+    const client = new PoundlockClient(
+      "https://poundlock.example",
+      "token",
+      poundlockFetch({
+        inference: false,
+        capabilities: {
+          api_major: 1,
+          contract_revision: 5,
+          features: FEATURES,
+          caller_permissions: ["models:read", "inference:invoke", "external:invoke"],
+        },
+      }),
+    );
+    const probe = await client.probe();
+    expect(probe.ok).toBe(true);
+    expect(probe.permissions).toEqual(
+      expect.arrayContaining(["models:read", "inference:invoke", "external:invoke"]),
+    );
+  });
+
+  it("connects a token that has only model and inference permissions", async () => {
+    const client = new PoundlockClient(
+      "https://poundlock.example",
+      "token",
+      poundlockFetch({ jobPermissions: [], jobOptionsForbidden: true }),
+    );
+    const probe = await client.probe();
+    expect(probe.ok).toBe(true);
+    expect(probe.missingPermissions).toEqual([]);
+    expect(probe.permissions).not.toContain("jobs:submit");
+    expect(probe.durableModels).toEqual([]);
+  });
+
+  it("finds a least-privilege token's permission to call out without job permissions", async () => {
+    const probe = (allowed: boolean) =>
+      new PoundlockClient(
+        "https://poundlock.example",
+        "token",
+        poundlockFetch({ jobPermissions: [], jobOptionsForbidden: true, external: { allowed } }),
+      ).probe();
+    expect((await probe(true)).permissions).toContain("external:invoke");
+    expect((await probe(false)).permissions).not.toContain("external:invoke");
+    // A disabled first model is no answer: the next external model decides.
+    const firstDisabled = (allowed: boolean) =>
+      new PoundlockClient(
+        "https://poundlock.example",
+        "token",
+        poundlockFetch({
+          jobPermissions: [],
+          jobOptionsForbidden: true,
+          external: { allowed, firstDisabled: true },
+        }),
+      ).probe();
+    expect((await firstDisabled(false)).permissions).not.toContain("external:invoke");
+    expect((await firstDisabled(true)).permissions).toContain("external:invoke");
   });
 
   it("connects a token that has only model and inference permissions", async () => {

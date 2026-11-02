@@ -33,6 +33,8 @@ export function pickerTheme(colours: Colours): SelectListTheme {
 export interface PickerOptions {
   /** What is being chosen, in the box's top border. */
   title?: string;
+  /** The value highlighted when the list opens; the first item otherwise. */
+  initial?: string;
 }
 
 /**
@@ -119,6 +121,8 @@ export function showPicker(
     // The list gets the labels alone; the box says what the highlighted one means.
     const labels = items.map(({ description: _description, ...rest }) => rest);
     const list = new SelectList(labels, Math.min(10, items.length), pickerTheme(colours), layout);
+    const initial = items.findIndex((item) => item.value === options.initial);
+    if (initial > 0) list.setSelectedIndex(initial);
     const box = new PickerBox(colours, options.title ?? "Choose one", list, items, layout);
     let handle: OverlayHandle | undefined;
     let settled = false;

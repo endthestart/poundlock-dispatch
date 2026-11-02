@@ -2,17 +2,19 @@
  * The Planner (ADR 016): a fresh read-only session that answers through
  * submit, and is told exactly what to fix when its answer cannot be used.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   answerProblems,
   milestonePlanPrompt,
   milestoneReviewPrompt,
   type PlannerSpec,
+  trimPlan,
 } from "@core/goal/planner-prompts";
 import { autoProject } from "@runtime/auto-session";
-import { createPlanner, PlannerError, plannerTimeLimit } from "@runtime/planner";
+import { createPlanner, cutOffRequest, PlannerError, plannerTimeLimit } from "@runtime/planner";
 import { milestoneProblems } from "@shared/milestones";
+import type { ModelFallback } from "@shared/spending-limit";
 import type { Milestone } from "@shared/types";
 import { afterAll, expect, it } from "vitest";
 import {
@@ -156,6 +158,12 @@ it("holds a review to a verdict for every requirement, and complete only when al
   expect(milestoneReviewPrompt({ ...spec, frozenChanges: false }, M1, [])).not.toContain(
     "list that test in changesFrozenTests",
   );
+  // Shown needs a truth the test sets up itself: a run's checks all passed with its warp inverted.
+  expect(milestoneReviewPrompt(spec, M1, [])).toContain(
+    "against a truth the test sets up itself, to the scenario's tolerance",
+  );
+  // A scenario fixed a flat formula that never divided pixel by pixel, and was shown.
+  expect(milestoneReviewPrompt(spec, M1, [])).toContain("A scenario can be wrong too");
 });
 
 it("shows a review the project's test files, so it does not plan one that exists", () => {
@@ -215,11 +223,75 @@ it("refuses tasks whose dependencies loop, and a milestone that delivers nothing
   ).toEqual(["M1 delivers no requirement; give each milestone the ones it delivers."]);
 });
 
-it("asks a Planner cut off at the output limit again, shorter", async () => {
+it("keeps the first 24 tasks of a plan that stays too long, without tasks that lose a dependency", async () => {
+  const many = Array.from({ length: 26 }, (_, index) => task(`Task ${index + 1}`, ["R1"]));
+  // Task 3 needs task 25, which is left out, and task 4 needs task 3.
+  many[2] = { ...many[2], dependsOn: ["Task 25"] } as (typeof many)[number];
+  many[3] = { ...many[3], dependsOn: ["Task 3"] } as (typeof many)[number];
+  expect(trimPlan(many).map((item) => item.title)).toEqual(
+    many
+      .slice(0, 24)
+      .map((item) => item.title)
+      .filter((title) => title !== "Task 3" && title !== "Task 4"),
+  );
+
+  const worktree = await tempDir("planner-long-");
+  // A local Planner that answers 26 tasks however often it is told to split them.
+  const server = await fakePoundlock({
+    respond: (request) =>
+      callsSinceLastUser(request).includes("submit")
+        ? { text: "Submitted." }
+        : {
+            toolCalls: [
+              { name: "submit", arguments: { tasks: many, verdicts: [], complete: false } },
+            ],
+          },
+  });
+  servers.push(server);
+  const activity: string[] = [];
+  const planner = createPlanner({
+    controllerUrl: server.url,
+    token: server.token,
+    model: {
+      id: "gate-model",
+      profileId: "p-gate",
+      context_tokens: 131_072,
+      max_output_tokens: 8192,
+      dataDestination: "operator_network",
+      routingRevision: "r1",
+    },
+    worktree,
+    project: autoProject({
+      runId: "r",
+      worktree,
+      baseCommit: "0",
+      createdAt: new Date().toISOString(),
+      checks: [],
+      protectedPaths: [],
+    }),
+    dir: await tempDir("planner-long-dir-"),
+    onActivity: (line) => activity.push(line),
+  });
+  // A gating Planner's cut plan need not hold an acceptance test for every requirement.
+  const answer = await planner.planMilestone({
+    spec: { ...spec, acceptanceFirst: true },
+    milestone: M1,
+    done: [],
+  });
+  expect(answer.tasks).toHaveLength(22);
+  expect(
+    server.requests.some((request) => lastUser(request).includes("Plan at most 24 tasks")),
+  ).toBe(true);
+  expect(activity).toContain("Planner: kept the first 22 of 26 tasks; the review plans the rest");
+});
+
+it("asks a Planner cut off at the output limit for its first few tasks, fewer each time", async () => {
   const worktree = await tempDir("planner-cutoff-");
+  const cutOffDir = await tempDir("planner-cutoff-dir-");
   const server = await fakePoundlock({
     respond: (request) => {
-      if (!lastUser(request).includes("cut off"))
+      // Cut off on the first answer and on the first retry, as a local Planner was.
+      if (!lastUser(request).includes("at most 4 tasks"))
         return { text: "Thinking at length", cutOff: true };
       return callsSinceLastUser(request).includes("submit")
         ? { text: "Submitted." }
@@ -258,13 +330,82 @@ it("asks a Planner cut off at the output limit again, shorter", async () => {
       checks: [],
       protectedPaths: [],
     }),
-    dir: await tempDir("planner-cutoff-dir-"),
+    dir: cutOffDir,
   });
   const answer = await planner.planMilestone({ spec, milestone: M1, done: [] });
   expect(answer.tasks.map((item) => item.title)).toEqual(["Import screen"]);
-  expect(
-    server.requests.some((request) => lastUser(request).includes("Keep your reasoning brief")),
-  ).toBe(true);
+  const asked = [
+    ...new Set(server.requests.map(lastUser).filter((text) => text.includes("cut off"))),
+  ];
+  expect(asked.map((text) => text.match(/at most (\d+) tasks/)?.[1])).toEqual(["8", "4"]);
+  expect(cutOffRequest("frozen", 0)).toContain("Keep your reasoning brief");
+  // Each cut-off reply's ends are kept beside the call.
+  expect(await readFile(join(cutOffDir, "1", "cut-off-1.txt"), "utf8")).toContain(
+    "Thinking at length",
+  );
+});
+
+it("asks the local fallback once a provider refuses the Planner for a spending limit, and keeps it", async () => {
+  const worktree = await tempDir("planner-fallback-");
+  const server = await fakePoundlock({
+    respond: (request) => {
+      if (request.model === "cloud-model") return { status: 402 };
+      return callsSinceLastUser(request).includes("submit")
+        ? { text: "Submitted." }
+        : {
+            toolCalls: [
+              {
+                name: "submit",
+                arguments: {
+                  tasks: [task("Import screen", ["R1"])],
+                  verdicts: [],
+                  complete: false,
+                },
+              },
+            ],
+          };
+    },
+  });
+  servers.push(server);
+  const local = {
+    id: "gate-model",
+    profileId: "p-gate",
+    context_tokens: 131_072,
+    max_output_tokens: 8192,
+    dataDestination: "operator_network" as const,
+    routingRevision: "r1",
+  };
+  const fallbacks: ModelFallback[] = [];
+  const planner = createPlanner({
+    controllerUrl: server.url,
+    token: server.token,
+    model: { ...local, id: "cloud-model" },
+    fallback: local,
+    onFallback: (fallback) => {
+      fallbacks.push(fallback);
+    },
+    worktree,
+    project: autoProject({
+      runId: "r",
+      worktree,
+      baseCommit: "0",
+      createdAt: new Date().toISOString(),
+      checks: [],
+      protectedPaths: [],
+    }),
+    dir: await tempDir("planner-fallback-dir-"),
+  });
+  const answer = await planner.planMilestone({ spec, milestone: M1, done: [] });
+  expect(answer.tasks.map((item) => item.title)).toEqual(["Import screen"]);
+  expect(fallbacks.map((item) => [item.role, item.from, item.to])).toEqual([
+    ["planner", "cloud-model", "gate-model"],
+  ]);
+  const refused = server.requests.filter((request) => request.model === "cloud-model").length;
+  await planner.planMilestone({ spec, milestone: M1, done: [] });
+  expect(server.requests.filter((request) => request.model === "cloud-model")).toHaveLength(
+    refused,
+  );
+  expect(fallbacks).toHaveLength(1);
 });
 
 it("ends a Planner's turn at its answer", async () => {
@@ -565,6 +706,8 @@ it("offers a Planner web search when the project turned it on", async () => {
         searched.push(query);
         return "Search results: 1. Filter bar https://example.com/filter";
       },
+      searchGithub: async () => "unused",
+      read: () => undefined,
       fetchPage: async () => "unused",
       resetLimits: () => void resets.push(1),
     },
@@ -574,7 +717,16 @@ it("offers a Planner web search when the project turned it on", async () => {
   expect(searched).toEqual(["photo catalog filter bar"]);
   expect(resets).toHaveLength(1);
   const offered = server.requests[0].tools?.map((tool) => tool.function?.name).sort();
-  expect(offered).toEqual(["find", "grep", "ls", "read", "submit", "web_fetch", "web_search"]);
+  expect(offered).toEqual([
+    "find",
+    "github_search",
+    "grep",
+    "ls",
+    "read",
+    "submit",
+    "web_fetch",
+    "web_search",
+  ]);
   expect(messageText(server.requests[0].messages[0])).toContain("never put the project's code");
 });
 
@@ -613,6 +765,81 @@ it("stops a Planner that keeps reading instead of answering, and says what it co
     .catch((error) => error);
   expect(failure).toBeInstanceOf(PlannerError);
   expect(failure.message).toBe("The Planner made 3 tool calls without answering.");
+});
+
+let lastRefusal = "";
+/** A Planner that answers once its reads are spent, wrongly, then reads before correcting. */
+async function lateCorrection(fixes: boolean) {
+  const worktree = await tempDir("planner-late-");
+  await writeFile(join(worktree, "README.md"), "# Library\n");
+  const refusedLast = (request: ChatRequest) => {
+    const text = messageText(request.messages.at(-1) ?? {});
+    if (text.includes("No more reading")) lastRefusal = text;
+    return text.includes("No more reading");
+  };
+  const server = await fakePoundlock({
+    respond: (request) => {
+      const calls = callsSinceLastUser(request);
+      if (lastUser(request).includes("cannot be used")) {
+        if (calls.includes("submit")) return { text: "Submitted." };
+        if (refusedLast(request) || !fixes || !calls.includes("read"))
+          return { toolCalls: [{ name: "read", arguments: { path: "README.md" } }] };
+        const tasks = [task("Import screen", ["R1"])];
+        return {
+          toolCalls: [{ name: "submit", arguments: { tasks, verdicts: [], complete: false } }],
+        };
+      }
+      if (calls.filter((name) => name === "read").length < 2)
+        return { toolCalls: [{ name: "read", arguments: { path: "README.md" } }] };
+      if (calls.includes("submit")) return { text: "Submitted." };
+      const tasks = [task("Import screen", ["R1"]), task("Stars", ["R2"])];
+      return {
+        toolCalls: [{ name: "submit", arguments: { tasks, verdicts: [], complete: false } }],
+      };
+    },
+  });
+  servers.push(server);
+  const planner = createPlanner({
+    controllerUrl: server.url,
+    token: server.token,
+    model: {
+      id: "gate-model",
+      profileId: "p-gate",
+      context_tokens: 131_072,
+      max_output_tokens: 8192,
+      dataDestination: "operator_network",
+      routingRevision: "r1",
+    },
+    worktree,
+    project: autoProject({
+      runId: "r",
+      worktree,
+      baseCommit: "0",
+      createdAt: new Date().toISOString(),
+      checks: [],
+      protectedPaths: [],
+    }),
+    dir: await tempDir("planner-late-dir-"),
+    maxToolCalls: 2,
+  });
+  return planner.planMilestone({ spec, milestone: M1, done: [] });
+}
+
+it("lets a correction read again after the Planner's reads ran out", async () => {
+  const answer = await lateCorrection(true);
+  expect(answer.tasks.map((item) => item.title)).toEqual(["Import screen"]);
+});
+
+it("names the refused answer when the Planner reads on instead of correcting it", async () => {
+  const failure = await lateCorrection(false).catch((error) => error);
+  // Each refused read said again what to fix.
+  expect(lastRefusal).toContain(
+    "call submit now with your earlier answer, corrected. “Stars” cites R2, outside M1.",
+  );
+  expect(failure).toBeInstanceOf(PlannerError);
+  expect(failure.message).toBe(
+    "The Planner's answer cannot be used (“Stars” cites R2, outside M1.), and it read on instead of correcting it.",
+  );
 });
 
 it("will not call a milestone complete while some of its tasks did not finish", () => {

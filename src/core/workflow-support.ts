@@ -1,71 +1,6 @@
-import { constants } from "node:fs";
-import { access, mkdir } from "node:fs/promises";
-import type { ProjectRecord, ProjectStatus, TaskRecord, VerificationView } from "@shared/types";
-import { defaultBudget, defaultPolicy } from "@shared/types";
-import { newId, nowIso } from "./ids.js";
+import type { ProjectRecord, TaskRecord, VerificationView } from "@shared/types";
 import { projectFiles } from "./paths.js";
-import { FileStore } from "./store.js";
 import { workerHintFields } from "./task-hints.js";
-import { newWorkflowIdentity } from "./workflow-identity.js";
-import { materializeSnapshot } from "./workspace.js";
-
-/**
- * Poundlock job statuses that mean the job is still ours to wait on. Two
- * copies of this list drifting apart would make the orchestrator and the
- * status view disagree about whether a run is finished.
- */
-export const ACTIVE_JOB: ReadonlySet<string> = new Set([
-  "submitted",
-  "waiting_node",
-  "waiting_capacity",
-  "preparing",
-  "ready",
-  "running",
-]);
-
-export async function createProjectFromFiles(options: {
-  store: FileStore;
-  name: string;
-  source: ProjectRecord["source"];
-  files: Array<{ path: string; content: Buffer; executable: boolean }>;
-  policy?: Partial<ProjectRecord["policy"]>;
-}): Promise<ProjectRecord> {
-  const id = newId("proj");
-  const files = projectFiles(options.store.layout.root, id);
-  await mkdir(files.dir, { recursive: true, mode: 0o700 });
-  const revision = await materializeSnapshot(
-    files.workspace,
-    options.files,
-    "Captured project base",
-  );
-  const now = nowIso();
-  const policy = { ...defaultPolicy(), ...options.policy };
-  const identity = newWorkflowIdentity();
-  const project: ProjectRecord = {
-    id,
-    name: options.name,
-    archived: false,
-    createdAt: now,
-    updatedAt: now,
-    status: "draft",
-    source: { ...options.source, baseRevision: revision },
-    policy,
-    budget: defaultBudget(),
-    integration: {
-      headRevision: revision,
-      expectedBase: revision,
-      appliedPatchSha256: [],
-    },
-    planRevision: 0,
-    workflowId: identity.workflowId,
-    managerSessionId: identity.managerConversationId,
-    eventCursor: 0,
-  };
-  await options.store.saveProject(project);
-  await options.store.saveTasks(id, []);
-  await options.store.saveMessages(id, []);
-  return project;
-}
 
 /**
  * The one statement of Dispatch's verification gate. Referenced by the manager
@@ -134,32 +69,11 @@ export function verificationFailed(verification?: VerificationView): boolean {
 
 /**
  * Manager listing, manager reads and interactive workers share this root.
- * Local folder projects use the live original path (ADR 007). A captured
- * snapshotSha256 (superseded create-time copies / test helper) still uses the
- * review workspace until it is a live folder.
+ * Local folder projects use the live original path (ADR 007).
  */
 export function projectWorkingRoot(dataRoot: string, project: ProjectRecord): string {
-  const workspace = projectFiles(dataRoot, project.id).workspace;
-  if (project.source.kind !== "local_folder") return workspace;
-  if (project.source.snapshotSha256) return workspace;
+  if (project.source.kind !== "local_folder") return projectFiles(dataRoot, project.id).workspace;
   return project.source.originalPath;
-}
-
-export function managerReadableRoot(dataRoot: string, project: ProjectRecord): string {
-  return projectWorkingRoot(dataRoot, project);
-}
-
-export async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function canDispatchStatus(status: ProjectStatus): boolean {
-  return status === "running" || status === "waiting_for_capacity" || status === "reviewing";
 }
 
 export function checksPassed(view: VerificationView | undefined, required: string[]): boolean {

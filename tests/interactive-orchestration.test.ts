@@ -4,7 +4,6 @@ import { rootsForFolderChoice } from "@core/access-roots";
 import { ApprovalBroker } from "@core/approval-broker";
 import { safeReadFile } from "@core/file-access";
 import type { WorkerPort } from "@core/interactive-worker";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import { type ManagerPort, ProjectOrchestrator } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { RouteRevisionChangedError } from "@core/role-routing";
@@ -14,6 +13,7 @@ import { hostCommandPort } from "@runtime/host-command";
 import { TURN_BUDGET_STOP } from "@shared/policy-limits";
 import { projectStatusView } from "@shared/project-status";
 import { describe, expect, it } from "vitest";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 async function fixture() {
@@ -1227,12 +1227,14 @@ describe("continued corrections and recovery", () => {
               tasks: [task("One"), task("Two"), task("Three")],
             });
           else if (ctx.prompt?.includes("Fix it up") || turns > 1)
-            reply ||= await ctx.host.proposePlan({
-              summary: "A fix-up",
-              acceptanceCriteria: ["done"],
-              tasks: [task("Two"), task("Two and a half")],
-              removeTasks: ["Three"],
-            });
+            reply ||= (
+              await ctx.host.proposePlan({
+                summary: "A fix-up",
+                acceptanceCriteria: ["done"],
+                tasks: [task("Two"), task("Two and a half")],
+                removeTasks: ["Three"],
+              })
+            ).text;
           return { text: "ok", toolTrace: [] };
         },
       },
@@ -1246,6 +1248,51 @@ describe("continued corrections and recovery", () => {
     expect(reply).toMatch(/removes 1 published task\(s\): “Three”/);
     const pending = await f.store.getPendingBoard(f.project.id);
     expect(pending?.tasks.map((item) => item.title)).toEqual(["One", "Two", "Two and a half"]);
+  });
+  it("moves a manager refused for a spending limit to the local fallback, says so, and asks again", async () => {
+    const f = await fixture();
+    await f.store.saveConnection({
+      url: "http://fixture",
+      token: "fixture",
+      roles: {
+        manager: { profileId: "cloud", profileName: "cloud", source: "interactive" },
+        interactive: { profileId: "coding", profileName: "coding", source: "interactive" },
+        fallback: { profileId: "local", profileName: "local", source: "interactive" },
+      },
+    });
+    const asked: string[] = [];
+    const engine = new ProjectOrchestrator({
+      hostCommands: hostCommandPort,
+      store: f.store,
+      clientFor: async () => f.backend,
+      worker: successful,
+      approvals: new ApprovalBroker(),
+      manager: {
+        async runTurn(ctx) {
+          asked.push(ctx.project.managerFallback?.profileId ?? "default");
+          if (!ctx.project.managerFallback)
+            throw new Error(
+              "402 Insufficient credits. Add more using https://openrouter.ai/credits",
+            );
+          return { text: "Hello from the fallback", toolTrace: [] };
+        },
+      },
+    });
+    await engine.sendMessage(f.project.id, "Build a thing");
+    expect(asked).toEqual(["default", "local"]);
+    expect((await f.store.getProject(f.project.id))?.managerFallback).toMatchObject({
+      profileId: "local",
+      from: "cloud",
+    });
+    const messages = await f.store.getMessages(f.project.id);
+    expect(
+      messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.text.startsWith("Manager switched from cloud to the local fallback local"),
+      ),
+    ).toBe(true);
+    expect(messages.at(-1)?.text).toBe("Hello from the fallback");
   });
   it("a service outage waits and then recovers without creating a worker attempt", async () => {
     const f = await fixture();
@@ -1433,6 +1480,47 @@ describe("the requirement ledger in a run", () => {
     requirementIds,
   });
 
+  it("checks a revision of a pending update against that update's ledger", async () => {
+    const f = await fixture();
+    const engine = new ProjectOrchestrator({
+      hostCommands: hostCommandPort,
+      store: f.store,
+      clientFor: async () => f.backend,
+      approvals: new ApprovalBroker(),
+      worker: successful,
+      manager: {
+        async runTurn() {
+          return { text: "", toolTrace: [] };
+        },
+      },
+    });
+    const host = engine.toolHost(f.project.id);
+    const r1 = { id: "R1", text: "Import", scenarios: ["grid shows photos"] };
+    const r2 = { id: "R2", text: "Rate", scenarios: ["stars stick"] };
+    await host.proposePlan({
+      summary: "s",
+      acceptanceCriteria: ["a"],
+      requirements: [r1],
+      tasks: [ledgerTask("Import", ["R1"])],
+    });
+    // The update adds R2 and waits for approval; its revision need not restate it.
+    await host.proposePlan({
+      summary: "s",
+      acceptanceCriteria: ["a"],
+      requirements: [r1, r2],
+      tasks: [ledgerTask("Import", ["R1"]), ledgerTask("Rate", ["R2"])],
+    });
+    await expect(
+      host.proposePlan({
+        summary: "s",
+        acceptanceCriteria: ["a"],
+        tasks: [ledgerTask("Import", ["R1"]), ledgerTask("Rate stars", ["R2"])],
+      }),
+    ).resolves.toBeDefined();
+    const pending = await f.store.getPendingBoard(f.project.id);
+    expect(pending?.plan.requirements?.map((item) => item.id)).toEqual(["R1", "R2"]);
+  });
+
   it("has every task cite the requirements it delivers once there is a ledger", async () => {
     const f = await fixture();
     const engine = new ProjectOrchestrator({
@@ -1448,6 +1536,14 @@ describe("the requirement ledger in a run", () => {
       },
     });
     const host = engine.toolHost(f.project.id);
+    // A task citing requirements that no ledger lists, even below the ledger's task threshold.
+    await expect(
+      host.proposePlan({
+        summary: "s",
+        acceptanceCriteria: ["a"],
+        tasks: [ledgerTask("Skeleton", ["R1", "R2"])],
+      }),
+    ).rejects.toThrow(/cite R1, R2, but the plan lists no requirements/);
     const requirements = [{ id: "R1", text: "Import", scenarios: ["grid shows photos"] }];
     await expect(
       host.proposePlan({
@@ -1456,7 +1552,9 @@ describe("the requirement ledger in a run", () => {
         requirements,
         tasks: [ledgerTask("Import", []), ledgerTask("Organize", ["R9"])],
       }),
-    ).rejects.toThrow(/“Import” cite none\. The ledger has no R9\. The ledger's IDs: R1/);
+    ).rejects.toThrow(
+      /“Import” cite none\. The ledger has no R9\. The ledger's IDs: R1\. Setup work cites the requirements it unblocks/,
+    );
     await expect(
       host.proposePlan({
         summary: "s",
@@ -1467,7 +1565,45 @@ describe("the requirement ledger in a run", () => {
           { ...ledgerTask("Docs", []), filesToTouch: ["README.md"] },
         ],
       }),
-    ).resolves.toMatch(/recorded/);
+    ).resolves.toMatchObject({ text: expect.stringMatching(/recorded/) });
+  });
+
+  it("sends a delegated task into an unapproved spec through propose_plan, keeping its revision", async () => {
+    const f = await fixture();
+    const engine = new ProjectOrchestrator({
+      hostCommands: hostCommandPort,
+      store: f.store,
+      clientFor: async () => f.backend,
+      approvals: new ApprovalBroker(),
+      worker: successful,
+      manager: {
+        async runTurn() {
+          return { text: "", toolTrace: [] };
+        },
+      },
+    });
+    const host = engine.toolHost(f.project.id);
+    const requirements = [{ id: "R1", text: "Import", scenarios: ["grid shows photos"] }];
+    const plan = (titles: string[]) => ({
+      summary: "s",
+      acceptanceCriteria: ["a"],
+      requirements,
+      tasks: titles.map((title) => ledgerTask(title, ["R1"])),
+    });
+    const extra = { ...ledgerTask("Verify", ["R1"]), title: "Verify" };
+    await host.proposePlan(plan(["Import"]));
+    await expect(host.delegateTask(extra)).rejects.toThrow(
+      /The owner has not approved this plan yet\. Add this task to it with propose_plan/,
+    );
+    await host.proposePlan(plan(["Import", "Organize"]));
+    await expect(host.delegateTask(extra)).rejects.toThrow(
+      /A revised board awaits the owner's decision/,
+    );
+    expect((await f.store.getPendingBoard(f.project.id))?.tasks.map((task) => task.title)).toEqual([
+      "Import",
+      "Organize",
+    ]);
+    expect((await f.store.getTasks(f.project.id)).map((task) => task.title)).toEqual(["Import"]);
   });
 
   it("checks a spec's milestones against the ledger, and keeps them across revisions", async () => {
@@ -1493,6 +1629,16 @@ describe("the requirement ledger in a run", () => {
       { id: "M1", title: "Skeleton", goal: "import and see", requirementIds: ["R1"] },
       { id: "M2", title: "Rate", goal: "rate", requirementIds: ["R2", "R1", "R7"] },
     ];
+    // Both kinds of problem in one answer, so that one correction can fix them all.
+    await expect(
+      host.proposePlan({
+        summary: "s",
+        acceptanceCriteria: ["a"],
+        requirements,
+        milestones,
+        tasks: [ledgerTask("Import", [])],
+      }),
+    ).rejects.toThrow(/“Import” cite none\..* R1 is in both M1 and M2/);
     await expect(
       host.proposePlan({
         summary: "s",
@@ -1565,15 +1711,21 @@ describe("the requirement ledger in a run", () => {
           const tasks = await f.store.getTasks(ctx.project.id);
           if (!tasks.length) {
             replies.push(
-              await ctx.host.proposePlan({
-                summary: "Import and review photos",
-                acceptanceCriteria: ["The owner can import and pick photos"],
-                requirements: [
-                  { id: "R1", text: "Import a folder", scenarios: ["the grid shows every photo"] },
-                  { id: "R2", text: "Organize photos", scenarios: ["photos sort by date"] },
-                ],
-                tasks: [ledgerTask("Import", ["R1"])],
-              }),
+              (
+                await ctx.host.proposePlan({
+                  summary: "Import and review photos",
+                  acceptanceCriteria: ["The owner can import and pick photos"],
+                  requirements: [
+                    {
+                      id: "R1",
+                      text: "Import a folder",
+                      scenarios: ["the grid shows every photo"],
+                    },
+                    { id: "R2", text: "Organize photos", scenarios: ["photos sort by date"] },
+                  ],
+                  tasks: [ledgerTask("Import", ["R1"])],
+                })
+              ).text,
             );
             return { text: "Proposed", toolTrace: [] };
           }
@@ -1668,11 +1820,13 @@ describe("the requirement ledger in a run", () => {
             else if (round === 1 && tasks.every((task) => task.status === "applied")) {
               round = 2;
               replies.push(
-                await ctx.host.proposePlan({
-                  summary: "Round two",
-                  acceptanceCriteria: ["organize works"],
-                  tasks: [ledgerTask("Organize", ["R2"])],
-                }),
+                (
+                  await ctx.host.proposePlan({
+                    summary: "Round two",
+                    acceptanceCriteria: ["organize works"],
+                    tasks: [ledgerTask("Organize", ["R2"])],
+                  })
+                ).text,
               );
             }
             return { text: "Recorded", toolTrace: [] };
@@ -1792,7 +1946,7 @@ describe("the requirement ledger in a run", () => {
         return {
           output:
             ctx.task.title === "Review the proposed plan"
-              ? "The ledger misses export.\nVerdict: revise\n1. Add a requirement for export."
+              ? "The ledger misses export.\nVerdict: **revise**\n1. Add a requirement for export."
               : "R1: shown — ReviewControllerTests.testPPicks",
           changedFiles: [],
           patch: "",
@@ -1804,11 +1958,12 @@ describe("the requirement ledger in a run", () => {
     it("reviews a new plan once per owner message, on the Verifier's model", async () => {
       readOnlyRuns.length = 0;
       const f = await verifierFixture();
-      const replies: string[] = [];
+      const replies: Array<{ text: string; revise: boolean }> = [];
       const plan = (summary: string) => ({
         summary,
         acceptanceCriteria: ["it works"],
         requirements: [{ id: "R1", text: "Import", scenarios: ["import a folder"] }],
+        architecture: "Reads headerless raw frames.",
         tasks: [ledgerTask("A", ["R1"]), ledgerTask("B", ["R1"]), ledgerTask("C", ["R1"])],
       });
       const engine = new ProjectOrchestrator({
@@ -1829,11 +1984,19 @@ describe("the requirement ledger in a run", () => {
       expect(readOnlyRuns).toHaveLength(1);
       expect(readOnlyRuns[0]).toMatchObject({ title: "Review the proposed plan", model: "strong" });
       expect(readOnlyRuns[0].question).toMatch(/Build an importer that exports too[\s\S]*R1/);
-      expect(replies[0]).toMatch(/Plan review by the Verifier[\s\S]*Verdict: revise/);
-      expect(replies[1]).not.toMatch(/Plan review/);
+      // A plan chose an input format nobody asked for; the review must see it.
+      expect(readOnlyRuns[0].question).toContain("Architecture:\nReads headerless raw frames.");
+      // Dependencies by number: runs 14 and 16 read task ids as broken references.
+      expect(readOnlyRuns[0].question).toContain("2. B [blocked] serves R1; after 1\n");
+      // The review asks for changes, so the manager revises before the turn ends.
+      expect(replies[0].text).toMatch(/Plan review by the Verifier[\s\S]*Verdict: \*\*revise/);
+      expect(replies[0].revise).toBe(true);
+      expect(replies[1]).toMatchObject({ revise: false });
+      expect(replies[1].text).not.toMatch(/Plan review/);
+      // Bold around the verdict still reaches the owner.
       expect(
         (await f.store.getMessages(f.project.id)).some((m) =>
-          /^Plan review: Verdict: revise\n1\. Add a requirement for export/.test(m.text),
+          /^Plan review: Verdict: \*\*revise\*\*\n1\. Add a requirement for export/.test(m.text),
         ),
       ).toBe(true);
     });
@@ -1853,12 +2016,14 @@ describe("the requirement ledger in a run", () => {
           worker: verifierWorker,
           manager: {
             async runTurn(ctx) {
-              reply = await ctx.host.proposePlan({
-                summary: "Plan",
-                acceptanceCriteria: ["it works"],
-                requirements: [{ id: "R1", text: "Import", scenarios: ["import a folder"] }],
-                tasks: tasks.map((title) => ledgerTask(title, ["R1"])),
-              });
+              reply = (
+                await ctx.host.proposePlan({
+                  summary: "Plan",
+                  acceptanceCriteria: ["it works"],
+                  requirements: [{ id: "R1", text: "Import", scenarios: ["import a folder"] }],
+                  tasks: tasks.map((title) => ledgerTask(title, ["R1"])),
+                })
+              ).text;
               return { text: "Proposed", toolTrace: [] };
             },
           },
@@ -1867,6 +2032,37 @@ describe("the requirement ledger in a run", () => {
         expect(reply).not.toMatch(/Plan review/);
       }
       expect(readOnlyRuns).toHaveLength(0);
+    });
+
+    it("reviews a one-task plan that carries a large ledger", async () => {
+      // A manager planned eight requirements as one stub task.
+      readOnlyRuns.length = 0;
+      const f = await verifierFixture();
+      let reply = "";
+      const ids = ["R1", "R2", "R3"];
+      const engine = new ProjectOrchestrator({
+        hostCommands: hostCommandPort,
+        store: f.store,
+        clientFor: async () => f.backend,
+        approvals: new ApprovalBroker(),
+        worker: verifierWorker,
+        manager: {
+          async runTurn(ctx) {
+            reply = (
+              await ctx.host.proposePlan({
+                summary: "Plan",
+                acceptanceCriteria: ["it works"],
+                requirements: ids.map((id) => ({ id, text: id, scenarios: ["use it"] })),
+                tasks: [ledgerTask("Skeleton", ids)],
+              })
+            ).text;
+            return { text: "Proposed", toolTrace: [] };
+          },
+        },
+      });
+      await engine.sendMessage(f.project.id, "Build it");
+      expect(readOnlyRuns).toHaveLength(1);
+      expect(reply).toMatch(/Plan review by the Verifier/);
     });
 
     it("runs the round-end verification on the Verifier's model", async () => {

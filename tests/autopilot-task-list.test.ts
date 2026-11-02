@@ -1,4 +1,4 @@
-import { milestoneGroups } from "@shared/milestones";
+import { goalMilestones, milestoneGroups } from "@shared/milestones";
 import { autopilotProgressLine, autopilotTaskView, autopilotUnfinished } from "@shared/task-view";
 import type { Milestone } from "@shared/types";
 import { expect, it } from "vitest";
@@ -53,4 +53,28 @@ it("groups tasks under their milestones in plan order, with the rest last", () =
     ["Other tasks", ["c"]],
   ]);
   expect(milestoneGroups(tasks, [])).toEqual([{ id: "all", tasks }]);
+});
+
+it("works a plan with requirements and no milestones as one, and a plan without either as none", () => {
+  const requirements = ["R1", "R2"].map((id) => ({
+    id,
+    text: id,
+    scenarios: [],
+    status: "open" as const,
+  }));
+  expect(goalMilestones({ summary: "Stack stars", requirements })).toEqual([
+    { id: "M1", title: "The whole plan", goal: "Stack stars", requirementIds: ["R1", "R2"] },
+  ]);
+  const own = [{ id: "M1", title: "Slice", goal: "g", requirementIds: ["R1"] }];
+  expect(goalMilestones({ summary: "s", requirements, milestones: own })).toBe(own);
+  expect(goalMilestones({ summary: "s" })).toEqual([]);
+  // A waived requirement is the owner's drop: the whole plan's milestone leaves it out.
+  const waived = [
+    ...requirements,
+    { id: "R3", text: "R3", scenarios: [], status: "waived" as const },
+  ];
+  expect(goalMilestones({ summary: "s", requirements: waived })[0].requirementIds).toEqual([
+    "R1",
+    "R2",
+  ]);
 });

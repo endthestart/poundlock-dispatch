@@ -1,17 +1,15 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { WorkerPort } from "@core/interactive-worker";
-import { MemoryPoundlock } from "@core/memory-poundlock";
-import { createProjectFromFiles, ProjectOrchestrator } from "@core/orchestration";
+import { ProjectOrchestrator } from "@core/orchestration";
 import { projectFiles } from "@core/paths";
 import { createFolderProject } from "@core/projects";
-import { assertProjectPath } from "@core/sandbox";
 import { ScriptedManager } from "@core/scripted-manager";
-import { previewFolder } from "@core/snapshot";
 import { FileStore } from "@core/store";
 import { wrapUntrusted } from "@core/untrusted";
 import { hostCommandPort } from "@runtime/host-command";
 import { describe, expect, it } from "vitest";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 /** For a test that never starts a task: a worker that fails the test if it is asked to run. */
@@ -20,34 +18,6 @@ const idleWorker: WorkerPort = {
     throw new Error("No task should start in this test.");
   },
 };
-
-describe("snapshot exclusions", () => {
-  it("omits git metadata, dependencies, and common secret names", async () => {
-    const root = await tempDir("dispatch-snap-");
-    await writeFile(join(root, "app.py"), "print(1)\n");
-    await mkdir(join(root, ".git"));
-    await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
-    await mkdir(join(root, "node_modules", "x"), { recursive: true });
-    await writeFile(join(root, "node_modules", "x", "index.js"), "1");
-    await writeFile(join(root, ".env"), "TOKEN=1");
-    await writeFile(join(root, "key.pem"), "no");
-    const preview = await previewFolder(root);
-    expect(preview.files.filter((file) => file.included).map((file) => file.path)).toEqual([
-      "app.py",
-    ]);
-    expect(preview.files.some((file) => file.path.endsWith(".env") && !file.included)).toBe(true);
-  });
-});
-
-describe("path sandbox", () => {
-  it("rejects traversal and foreign roots", () => {
-    expect(() => assertProjectPath("/tmp/proj-a", "../proj-b/secret")).toThrow(
-      /inside this project/,
-    );
-    expect(() => assertProjectPath("/tmp/proj-a", ".git/config")).toThrow(/Git metadata/);
-    expect(assertProjectPath("/tmp/proj-a", "src/main.py")).toContain("src/main.py");
-  });
-});
 
 describe("untrusted content", () => {
   it("cannot be treated as a permission grant in wrapped text", () => {
@@ -74,20 +44,14 @@ describe("isolation", () => {
       manager,
       worker: idleWorker,
     });
-    const a = await createProjectFromFiles({
-      store,
-      name: "a",
-      files: [{ path: "secret.txt", content: Buffer.from("aaa\n"), executable: false }],
-      source: dummySource(),
-    });
-    const b = await createProjectFromFiles({
-      store,
-      name: "b",
-      files: [{ path: "public.txt", content: Buffer.from("bbb\n"), executable: false }],
-      source: dummySource(),
-    });
+    const folderA = await tempDir("dispatch-iso-a-");
+    await writeFile(join(folderA, "secret.txt"), "aaa\n");
+    const folderB = await tempDir("dispatch-iso-b-");
+    await writeFile(join(folderB, "public.txt"), "bbb\n");
+    await createFolderProject({ store, folder: folderA, name: "a" });
+    const b = await createFolderProject({ store, folder: folderB, name: "b" });
     const host = orchestrator.toolHost(b.id);
-    await expect(host.readFile("../" + a.id + "/workspace/secret.txt")).rejects.toThrow();
+    await expect(host.readFile(`../${basename(folderA)}/secret.txt`)).rejects.toThrow();
     const listed = await host.listFiles();
     expect(listed.some((file) => file.path === "secret.txt")).toBe(false);
     expect(listed.some((file) => file.path === "public.txt")).toBe(true);
@@ -140,9 +104,8 @@ describe("isolation", () => {
     await store.init();
     const project = await createFolderProject({ store, folder: original, name: "stale-ws" });
     if (project.source.kind !== "local_folder") throw new Error("expected a local folder");
-    project.source.originalFingerprint = "stale-fingerprint";
     project.source.baseRevision = "base-rev";
-    project.integration.headRevision = "base-rev";
+    (project.integration as { headRevision?: string }).headRevision = "base-rev";
     await store.saveProject(project);
     const workspace = projectFiles(data, project.id).workspace;
     await mkdir(workspace, { recursive: true });
@@ -172,7 +135,7 @@ describe("isolation", () => {
     const project = await createFolderProject({ store, folder: original, name: "ahead" });
     if (project.source.kind !== "local_folder") throw new Error("expected a local folder");
     project.source.baseRevision = "rev-0";
-    project.integration.headRevision = "rev-1";
+    (project.integration as { headRevision?: string }).headRevision = "rev-1";
     await store.saveProject(project);
     const orchestrator = new ProjectOrchestrator({
       hostCommands: hostCommandPort,
@@ -215,12 +178,9 @@ describe("activity", () => {
         if (text) activity.push(text);
       },
     });
-    const project = await createProjectFromFiles({
-      store,
-      name: "demo",
-      files: [{ path: "README.md", content: Buffer.from("demo\n"), executable: false }],
-      source: dummySource(),
-    });
+    const folder = await tempDir("dispatch-activity-folder-");
+    await writeFile(join(folder, "README.md"), "demo\n");
+    const project = await createFolderProject({ store, folder, name: "demo" });
     await orchestrator.sendMessage(project.id, "What is this project?");
     expect(sawUserBeforeTurn).toBe(true);
     expect(notifies).toBeGreaterThan(0);
@@ -230,18 +190,3 @@ describe("activity", () => {
     expect(messages.some((message) => message.role === "manager")).toBe(true);
   });
 });
-
-function dummySource() {
-  return {
-    kind: "local_folder" as const,
-    originalPath: "/tmp/x",
-    capturedAt: new Date().toISOString(),
-    snapshotSha256: "x",
-    baseRevision: "",
-    includedFiles: 1,
-    includedBytes: 1,
-    excludedPatterns: [],
-    includedUncommitted: true,
-    originalFingerprint: "x",
-  };
-}

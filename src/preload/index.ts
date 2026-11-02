@@ -19,7 +19,7 @@ function readInitialAppearanceTheme(): AppearanceTheme {
 
 import type {
   AppStateView,
-  ConnectionSettings,
+  ConnectionAddress,
   ExportOutcome,
   ForgeKind,
   ProjectActionTarget,
@@ -46,15 +46,15 @@ const api = {
       ipcRenderer.removeListener(ipcChannels.subscribe, wrapped);
     };
   },
-  connectionGet: () => ipcRenderer.invoke(ipcChannels.connectionGet),
-  connectionSave: (settings: ConnectionSettings) =>
+  connectionSave: (settings: ConnectionAddress) =>
     ipcRenderer.invoke(ipcChannels.connectionSave, settings),
-  connectionClear: () => ipcRenderer.invoke(ipcChannels.connectionClear),
   saveLocalManager: (settings: import("../shared/types").LocalManagerSettings) =>
     ipcRenderer.invoke(ipcChannels.localManagerSave, settings) as Promise<AppStateView>,
   saveWebSearch: (url: string | null) =>
     ipcRenderer.invoke(ipcChannels.webSearchSave, url) as Promise<AppStateView>,
-  testLocalManager: (settings: import("../shared/types").LocalManagerSettings) =>
+  testLocalManager: (
+    settings: Pick<import("../shared/types").LocalManagerSettings, "url" | "model" | "token">,
+  ) =>
     ipcRenderer.invoke(ipcChannels.localManagerTest, settings) as Promise<{
       ok: boolean;
       url: string;
@@ -67,7 +67,6 @@ const api = {
     ipcRenderer.invoke(ipcChannels.modelsSave, roles) as Promise<AppStateView>,
   connectionTest: () => ipcRenderer.invoke(ipcChannels.connectionTest),
   chooseFolder: () => ipcRenderer.invoke(ipcChannels.chooseFolder) as Promise<string | undefined>,
-  previewFolder: (folder: string) => ipcRenderer.invoke(ipcChannels.projectPreview, folder),
   createFolderProject: (payload: {
     folder: string;
     name: string;
@@ -82,10 +81,6 @@ const api = {
     forge?: ForgeKind;
   }) => ipcRenderer.invoke(ipcChannels.projectCreateGit, payload),
   openProject: (id: string) => ipcRenderer.invoke(ipcChannels.projectOpen, id),
-  archiveProject: (id: string, workflowId?: string) =>
-    ipcRenderer.invoke(ipcChannels.projectArchive, id, workflowId) as Promise<AppStateView>,
-  removeProject: (id: string, workflowId?: string) =>
-    ipcRenderer.invoke(ipcChannels.projectRemove, id, workflowId) as Promise<AppStateView>,
   /**
    * Run a guarded lifecycle action bound to a stable project/run identity.
    * Use projectLifecycleActions() from @shared/project-status to decide which
@@ -142,10 +137,6 @@ const api = {
     ipcRenderer.invoke(ipcChannels.cancelRun, target) as Promise<AppStateView>,
   replyInput: (text: string, target?: ProjectActionTarget) =>
     ipcRenderer.invoke(ipcChannels.replyInput, text, target) as Promise<AppStateView>,
-  startFresh: (target?: ProjectActionTarget) =>
-    ipcRenderer.invoke(ipcChannels.startFresh, target) as Promise<AppStateView>,
-  clearCurrentRun: (target?: ProjectActionTarget) =>
-    ipcRenderer.invoke(ipcChannels.clearCurrentRun, target) as Promise<AppStateView>,
   /** Summarise the manager's older messages now; optional instructions focus the summary. */
   compactConversation: (instructions?: string, target?: ProjectActionTarget) =>
     ipcRenderer.invoke(
@@ -153,8 +144,6 @@ const api = {
       instructions,
       target,
     ) as Promise<AppStateView>,
-  acceptReviewed: (target?: ProjectActionTarget) =>
-    ipcRenderer.invoke(ipcChannels.acceptReviewed, target) as Promise<AppStateView>,
   reopenRun: (target?: ProjectActionTarget) =>
     ipcRenderer.invoke(ipcChannels.reopenRun, target) as Promise<AppStateView>,
   overrideRun: (reason: string, target?: ProjectActionTarget) =>
@@ -186,6 +175,14 @@ const api = {
     ipcRenderer.invoke(ipcChannels.autopilotMerge, target) as Promise<AppStateView>,
   autopilotReport: (target?: ProjectActionTarget) =>
     ipcRenderer.invoke(ipcChannels.autopilotReport, target) as Promise<AppStateView>,
+  autopilotDrop: (target?: ProjectActionTarget) =>
+    ipcRenderer.invoke(ipcChannels.autopilotDrop, target) as Promise<AppStateView>,
+  autopilotCleanupList: () =>
+    ipcRenderer.invoke(ipcChannels.autopilotCleanupList) as Promise<
+      import("../shared/auto-run").AutopilotCleanupItem[]
+    >,
+  autopilotCleanup: (runIds: string[]) =>
+    ipcRenderer.invoke(ipcChannels.autopilotCleanup, runIds) as Promise<AppStateView>,
 };
 
 contextBridge.exposeInMainWorld("poundlockDispatch", api);

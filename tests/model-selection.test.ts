@@ -144,23 +144,19 @@ it("resolves legacy aliases against a canonical-only listing and saves UUIDs wit
     profileId: "stable-id",
     profileName: "new-profile",
     source: "interactive",
-    routingRevision: "route-1",
     lastApprovedRoutingRevision: "route-1",
     approvedDataDestination: "operator_network",
   });
   expect(catalogMatchesBinding(catalog, migrated.manager!)).toBe(catalog[0]);
   expect(roles.manager.profileId).toBe("coding");
   expect(canonicalRoleMap(roles, [])).toEqual(roles);
-  expect(profileDisplayName(catalog[0])).toBe("Example model — new-profile");
+  expect(profileDisplayName(catalog[0])).toBe("Example model");
 });
 
-it("leads with model identity, falling back to the upstream model id, then to the profile name", () => {
+it("names a model once: the operator's label, else the profile name", () => {
   expect(profileDisplayName({ name: "vega-general", modelLabel: "Qwen 3.6 35B-A3B" })).toBe(
-    "Qwen 3.6 35B-A3B — vega-general",
+    "Qwen 3.6 35B-A3B",
   );
-  expect(
-    profileDisplayName({ name: "vega-general", modelLabel: undefined, upstreamModel: "qwen3.6" }),
-  ).toBe("qwen3.6 — vega-general");
   expect(profileDisplayName({ name: "vega-general" })).toBe("vega-general");
 });
 

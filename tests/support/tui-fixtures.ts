@@ -26,21 +26,14 @@ export function project(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     source: {
       kind: "local_folder",
       originalPath: "/tmp/demo",
-      capturedAt: WHEN,
-      snapshotSha256: "",
       baseRevision: "",
-      includedFiles: 1,
-      includedBytes: 1,
       excludedPatterns: [],
-      includedUncommitted: false,
-      originalFingerprint: "",
     },
     policy: defaultPolicy(),
     budget: { jobsSubmitted: 0, managerTurnsUsed: 0, externalEscalationsUsed: 0 },
     integration: {},
     planRevision: 1,
     managerSessionId: "session-1",
-    eventCursor: 0,
     ...overrides,
   } as ProjectRecord;
 }

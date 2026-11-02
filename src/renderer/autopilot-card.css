@@ -1,0 +1,110 @@
+.run-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.run-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.run-card-head .state-pill {
+  font-size: var(--fs-body);
+  padding: 2px 10px;
+}
+.run-card-summary {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+.run-meters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+}
+.run-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.run-meter-label {
+  font-size: var(--fs-meta);
+  color: var(--faint);
+}
+.run-meter-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+  overflow: hidden;
+}
+.run-meter-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.run-requirements {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.run-requirements li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 10px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--fs-meta);
+}
+.run-requirement-text {
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-verdict-word {
+  color: var(--faint);
+  font-size: var(--fs-tiny);
+}
+.run-verdict-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--state-unknown);
+}
+[data-verdict="shown"] .run-verdict-dot {
+  background: var(--state-ok);
+}
+[data-verdict="partly"] .run-verdict-dot {
+  background: var(--state-review);
+}
+[data-verdict="not_shown"] .run-verdict-dot {
+  background: var(--state-fault);
+}
+.run-now {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-body);
+}
+.run-list ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+.run-list li {
+  margin: 2px 0;
+}
+.run-legend {
+  margin: -4px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--faint);
+}

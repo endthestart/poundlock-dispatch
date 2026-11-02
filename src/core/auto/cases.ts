@@ -1,3 +1,4 @@
+import { referenceBrief } from "@core/goal/research";
 import type { AutoCase, AutoRunState } from "@shared/auto-run";
 import type { TaskRecord } from "@shared/types";
 
@@ -25,6 +26,10 @@ export function casesFromTasks(
       task.contextNote ? `Context from the manager: ${task.contextNote}` : "",
       task.filesToTouch?.length ? `Files to touch: ${task.filesToTouch.join(", ")}` : "",
       task.reuse?.length ? `Reuse: ${task.reuse.join("; ")}` : "",
+      task.acceptanceTests?.length
+        ? `Acceptance tests: Dispatch adds ${task.acceptanceTests.map((test) => test.path).join(", ")} when this case starts. The Planner wrote them from the owner's scenarios, and they are frozen: make the code pass them without changing them. If one is wrong, finish the case blocked and say which and why.`
+        : "",
+      referenceBrief(task.references ?? []),
     ]
       .filter(Boolean)
       .join("\n\n"),
@@ -37,6 +42,9 @@ export function casesFromTasks(
           frozenTestsToChange: [...task.frozenTestsToChange],
           ...(task.frozenChangeReason ? { frozenChangeReason: task.frozenChangeReason } : {}),
         }
+      : {}),
+    ...(task.acceptanceTests?.length
+      ? { acceptanceTests: task.acceptanceTests.map((test) => ({ ...test })) }
       : {}),
     ...(task.requirementIds?.length ? { requirementIds: [...task.requirementIds] } : {}),
     ...(task.milestoneId ? { milestoneId: task.milestoneId } : {}),
