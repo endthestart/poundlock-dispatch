@@ -142,15 +142,8 @@ it("patches managed identity usage without a full probe", async () => {
   expect(cache.probe?.managedIdentities?.[0].usage?.remaining_budget).toBe(3.1);
 });
 
-it("preserves discovery for role-only saves but invalidates changed credentials or controller", () => {
-  expect(
-    connectionDiscoveryChanged(connection, {
-      ...connection,
-      url: "http://fixture/",
-      token: "",
-      roles: { manager: { profileId: "other", profileName: "other", source: "interactive" } },
-    }),
-  ).toBe(false);
+it("preserves discovery for a save of the same address but invalidates changed credentials or controller", () => {
+  expect(connectionDiscoveryChanged(connection, { url: "http://fixture/", token: "" })).toBe(false);
   expect(connectionDiscoveryChanged(connection, { ...connection, token: "new" })).toBe(true);
   expect(connectionDiscoveryChanged(connection, { ...connection, url: "http://new" })).toBe(true);
 });

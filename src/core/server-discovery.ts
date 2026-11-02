@@ -1,4 +1,4 @@
-import type { ConnectionProbe, ConnectionSettings } from "@shared/types";
+import type { ConnectionAddress, ConnectionProbe, ConnectionSettings } from "@shared/types";
 
 /** Shared UI discovery. Refreshing never changes project policy or runtime state. */
 export class ServerDiscovery {
@@ -98,8 +98,8 @@ export class ServerDiscovery {
 }
 
 export function connectionDiscoveryChanged(
-  existing: ConnectionSettings,
-  next: ConnectionSettings,
+  existing: ConnectionAddress,
+  next: ConnectionAddress,
 ): boolean {
   return (
     existing.url.trim().replace(/\/+$/, "") !== next.url.trim().replace(/\/+$/, "") ||

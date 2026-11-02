@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import type { WorkerPort, WorkerResult } from "@core/interactive-worker";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import {
   type ManagerPort,
   type ManagerTurnContext,
@@ -14,6 +13,7 @@ import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
 import { hostCommandPort } from "@runtime/host-command";
 import type { ProjectPolicy, TaskRecord } from "@shared/types";
+import { MemoryPoundlock } from "./memory-poundlock";
 
 /** Deterministic Dispatch fixture: real store and orchestrator, fake manager/worker/Poundlock. */
 export async function workflowFixture(options?: {

@@ -142,7 +142,8 @@ export interface PromptOptions {
 /** The field for a plain prompt: pi-tui's own `Input`, with the focus flag its box needs. */
 function plainField(initial: string | undefined) {
   const input = new Input({ prompt: PROMPT });
-  if (initial) input.setValue(initial);
+  // Typed rather than set, so the cursor ends after it and Backspace edits it.
+  if (initial) input.handleInput(initial);
   return input;
 }
 

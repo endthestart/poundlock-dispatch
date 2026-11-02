@@ -34,7 +34,7 @@ Generated from the production dependency installation. Each package keeps its ow
 | @earendil-works/pi-mcp | 1.1.0 | MIT |
 | @earendil-works/pi-telemetry | 1.1.0 | MIT |
 | @earendil-works/pi-tui | 1.1.0 | MIT |
-| @esbuild/darwin-arm64 | 0.28.2 | MIT |
+| @esbuild/darwin-x64 | 0.28.2 | MIT |
 | @google/genai | 2.21.0 | Apache-2.0 |
 | @protobufjs/aspromise | 1.1.2 | BSD-3-Clause |
 | @protobufjs/base64 | 1.1.2 | BSD-3-Clause |
@@ -124,8 +124,7 @@ Generated from the production dependency installation. Each package keeps its ow
 | tslib | 2.8.1 | 0BSD |
 | typebox | 1.0.33 | MIT |
 | typebox | 1.3.27 | MIT |
-| undici | 7.29.1 | MIT |
-| undici | 8.10.2 | MIT |
+| undici | 8.12.2 | MIT |
 | undici-types | 7.10.0 | MIT |
 | web-streams-polyfill | 3.3.3 | MIT |
 | which | 2.0.2 | ISC |

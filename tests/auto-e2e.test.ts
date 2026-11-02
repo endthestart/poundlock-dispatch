@@ -335,7 +335,9 @@ describe("local auto mode, end to end (offline)", () => {
       expect(await cli("export", run.runId, "--out", patch)).toBe(0);
       expect(output.join("")).toContain("verified, not reviewed");
       const text = await readFile(patch, "utf8");
-      expect(text.split("\n")[0]).toBe(`# Dispatch auto run ${run.runId}: verified, not reviewed.`);
+      expect(text.split("\n")[0]).toBe(
+        `# Dispatch Autopilot run ${run.runId}: verified, not reviewed.`,
+      );
       const clean = join(root, "clean");
       execFileSync("git", ["clone", "-q", source, clean]);
       execFileSync("git", ["apply", "--check", patch], { cwd: clean });

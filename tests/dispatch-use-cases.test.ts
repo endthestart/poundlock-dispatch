@@ -2,8 +2,7 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import { LiveWorkBook } from "@core/live-work";
-import { MemoryPoundlock } from "@core/memory-poundlock";
-import { createProjectFromFiles, ProjectOrchestrator } from "@core/orchestration";
+import { ProjectOrchestrator } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { shouldDeferInfrastructureRecovery } from "@core/recovery";
 import { recoveryNoticesFromSnapshot } from "@core/recovery-notices";
@@ -12,7 +11,6 @@ import { FileStore } from "@core/store";
 import { hostCommandPort } from "@runtime/host-command";
 import { approvalIgnoresKeyboardTarget } from "@shared/approval-copy";
 import { composerSendBlocked } from "@shared/composer-guard";
-import { liveWorkDockView } from "@shared/live-work-view";
 import {
   approvedRoutingRevisionForProfile,
   bindingForProfile,
@@ -21,22 +19,8 @@ import {
 } from "@shared/roles";
 import { describe, expect, it } from "vitest";
 import { DISPATCH_USE_CASES } from "./dispatch-use-cases";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
-
-function dummySource() {
-  return {
-    kind: "local_folder" as const,
-    originalPath: "/tmp/use-case",
-    capturedAt: new Date().toISOString(),
-    snapshotSha256: "use-case",
-    baseRevision: "",
-    includedFiles: 1,
-    includedBytes: 5,
-    excludedPatterns: [],
-    includedUncommitted: true,
-    originalFingerprint: "use-case",
-  };
-}
 
 describe("Dispatch use-case matrix", () => {
   it("names U1–U3 for CI and live gates", () => {
@@ -64,12 +48,9 @@ describe("U1 discussion only", () => {
         },
       },
     });
-    const project = await createProjectFromFiles({
-      store,
-      name: "u1",
-      files: [{ path: "README.md", content: Buffer.from("hello\n"), executable: false }],
-      source: dummySource(),
-    });
+    const folder = await tempDir("u1-folder-");
+    await writeFile(join(folder, "README.md"), "hello\n");
+    const project = await createFolderProject({ store, folder, name: "u1" });
     await orchestrator.sendMessage(project.id, "What is in this folder?");
     expect(await store.getTasks(project.id)).toEqual([]);
     expect(await store.getPlan(project.id)).toBeUndefined();
@@ -216,7 +197,7 @@ describe("infrastructure 503 copy and recovery budget", () => {
         infrastructureIssue: undefined,
         needsInput: undefined,
         budget: { managerTurnsUsed: 0, jobsSubmitted: 0 },
-        integration: { headRevision: "", expectedBase: "", appliedPatchSha256: [] },
+        integration: {},
       },
       tasks: [
         {
@@ -295,7 +276,7 @@ describe("composer and conversation activity", () => {
     ).toBeUndefined();
   });
 
-  it("keeps per-project live-work history and spins only the current line", () => {
+  it("keeps per-project live-work history", () => {
     const book = new LiveWorkBook();
     book.record("a", "Asking the Project Manager…", "2026-09-17T12:00:00Z");
     book.record("a", "vega-general is replying…", "2026-09-17T12:00:02Z");
@@ -303,10 +284,6 @@ describe("composer and conversation activity", () => {
     expect(book.view("a").liveWork).toHaveLength(2);
     expect(book.view("b").liveWork).toHaveLength(1);
     book.clearActivity("a");
-    const idle = liveWorkDockView(undefined, book.view("a").liveWork);
-    expect(idle?.spinning).toBe(false);
-    expect(idle?.earlier).toHaveLength(1);
-    const busy = liveWorkDockView("vega-general is replying… · 8s", book.view("a").liveWork);
-    expect(busy?.spinning).toBe(true);
+    expect(book.view("a").liveWork).toHaveLength(2);
   });
 });

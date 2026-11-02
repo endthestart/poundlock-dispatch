@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { MANAGER_SYSTEM_PROMPT } from "@core/manager-prompt";
 import { requireInteractiveLimits } from "@shared/roles";
 import type { InteractiveModel, ReasoningChoice } from "@shared/types";
+import { MODEL_REQUEST_TIMEOUT_MS } from "./model-http.js";
 import { lockedPiResources } from "./pi-resources.js";
 import {
   applyReasoning,
@@ -64,6 +64,7 @@ export async function createDispatchPiSession(options: SessionFactoryOptions) {
         keepRecentTokens: Math.min(6000, Math.floor(contextTokens / 8)),
       },
       retry: { enabled: false },
+      httpIdleTimeoutMs: MODEL_REQUEST_TIMEOUT_MS,
     },
     { projectTrusted: false },
   );
@@ -120,5 +121,3 @@ export async function createDispatchPiSession(options: SessionFactoryOptions) {
   }) as typeof stream;
   return { session, pi };
 }
-
-export { MANAGER_SYSTEM_PROMPT };

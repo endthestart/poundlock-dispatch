@@ -21,21 +21,14 @@ function project(): ProjectRecord {
     source: {
       kind: "local_folder",
       originalPath: "/tmp/example",
-      capturedAt: "now",
-      snapshotSha256: "",
       baseRevision: "",
-      includedFiles: 0,
-      includedBytes: 0,
       excludedPatterns: [],
-      includedUncommitted: true,
-      originalFingerprint: "",
     },
     policy: { ...defaultPolicy(), verification: { commands: ["npm test"], protectedPaths: [] } },
     budget: defaultBudget(),
-    integration: { headRevision: "", expectedBase: "", appliedPatchSha256: [] },
+    integration: {},
     planRevision: 0,
     managerSessionId: "manager",
-    eventCursor: 0,
   };
 }
 

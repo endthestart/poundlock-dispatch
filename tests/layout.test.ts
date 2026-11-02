@@ -1,7 +1,6 @@
 import {
   COMFORT_MAIN_PX,
   fitPanels,
-  fitPanelWidths,
   LEFT_PANEL,
   MIN_MAIN_PX,
   PANEL_HANDLE_PX,
@@ -9,23 +8,6 @@ import {
   resizeByKey,
 } from "@shared/panel-layout";
 import { describe, expect, it } from "vitest";
-
-it("keeps the conversation column usable at the supported minimum window", () => {
-  const fitted = fitPanelWidths(960, LEFT_PANEL.fallback, RIGHT_PANEL.fallback);
-  expect(fitted.left + fitted.right + PANEL_HANDLE_PX * 2 + MIN_MAIN_PX).toBeLessThanOrEqual(960);
-  expect(960 - (fitted.left + fitted.right + PANEL_HANDLE_PX * 2)).toBeGreaterThanOrEqual(
-    MIN_MAIN_PX,
-  );
-});
-
-it("shrinks stored inspector width before shrinking the project list", () => {
-  const fitted = fitPanelWidths(960, LEFT_PANEL.max, RIGHT_PANEL.max);
-  expect(fitted.right).toBe(RIGHT_PANEL.min);
-  expect(fitted.left).toBeGreaterThanOrEqual(LEFT_PANEL.min);
-  expect(960 - (fitted.left + fitted.right + PANEL_HANDLE_PX * 2)).toBeGreaterThanOrEqual(
-    MIN_MAIN_PX,
-  );
-});
 
 describe("fitPanels", () => {
   const open = {

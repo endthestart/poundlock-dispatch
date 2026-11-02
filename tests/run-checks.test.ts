@@ -21,6 +21,23 @@ it("runs every check, keeps going past a failing exit, and passes only when all 
   expect(view.reason).toMatch(/failed or were not all run/);
 });
 
+it("stops at the first failing check when one failure answers the question", async () => {
+  const seen: string[] = [];
+  const view = await runChecks(
+    ["lint", "test"],
+    async (command) => {
+      seen.push(command);
+      return command === "lint"
+        ? { exitCode: 1, output: "1 problem" }
+        : { exitCode: 0, output: "3 passed" };
+    },
+    live(),
+    { stopOnFailure: true },
+  );
+  expect(seen).toEqual(["lint"]);
+  expect(view.status).toBe("failed");
+});
+
 it("fails a test command that ran no tests, and stops there when asked", async () => {
   const seen: string[] = [];
   const view = await runChecks(

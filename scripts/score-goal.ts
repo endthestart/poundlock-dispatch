@@ -58,10 +58,14 @@ const byStage = [...cases.values()].reduce<Record<string, number>>((counts, stag
   return counts;
 }, {});
 
-// Interventions: everything the owner had to do after the start.
+// Interventions: what steered the build after the start, the owner's messages (D3, 30 Oct).
+// Pauses, stops and resumes steer nothing, so they are counted apart.
 const inbox = of("inbox").map((entry) => String(entry.event.cmd));
-const resumes = of("run_resumed").length;
-const interventions = inbox.length + resumes;
+const interventions = inbox.filter((cmd) => cmd === "message").length;
+const pauses = [
+  ...inbox.filter((cmd) => cmd !== "message"),
+  ...Array(of("run_resumed").length).fill("resume"),
+];
 
 const ends = of("run_ended").map((entry) => String(entry.event.outcome));
 const mutants = of("mutation").flatMap(
@@ -82,7 +86,8 @@ const lines = [
   `- Tasks: ${Object.entries(byStage)
     .map(([stage, count]) => `${count} ${stage}`)
     .join(", ")}`,
-  `- Interventions after start: ${interventions} (${[...inbox, ...Array(resumes).fill("resume")].join(", ") || "none"})`,
+  `- Interventions after start: ${interventions} (owner messages)`,
+  `- Pauses and resumes: ${pauses.length} (${pauses.join(", ") || "none"})`,
   `- Stops: ${ends.join(", ") || "still running"}${of("run_ended").length ? ` — ${String(of("run_ended").at(-1)?.event.reason)}` : ""}`,
   `- Mutation catch rate: ${caught}/${mutants.length} (${percent(caught, mutants.length)})`,
   `- Milestones: ${

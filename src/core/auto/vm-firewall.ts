@@ -36,7 +36,27 @@ export const VM_FIREWALL_RULES = [
   'if command -v ip6tables >/dev/null; then ip6tables -N DOCKER-USER 2>/dev/null || true; ip6tables -F DOCKER-USER; for net in fc00::/7 fe80::/10 ff00::/8 ::1/128 ::ffff:0:0/96; do ip6tables -A DOCKER-USER -d "$net" -j DROP; done; ip6tables -A DOCKER-USER -j RETURN; fi',
 ];
 
-/** The command that applies the rules to colima's `dispatch-auto` VM. */
+/**
+ * The colima profile behind a Docker context: `colima-<profile>`, or `colima`
+ * for colima's default; undefined for a context colima does not run. Messages
+ * named `dispatch-auto` even for a run in another VM, so the command they gave
+ * changed the wrong one.
+ */
+export function colimaProfileOf(context: string | undefined): string | undefined {
+  if (!context) return "dispatch-auto";
+  if (context === "colima") return "default";
+  return context.startsWith("colima-") ? context.slice("colima-".length) : undefined;
+}
+
+/** How to apply the rules to the VM behind a Docker context, in words a person can run. */
+export function vmFirewallFix(context: string | undefined): string {
+  const profile = colimaProfileOf(context);
+  return profile
+    ? vmFirewallCommand(profile)
+    : `inside the VM behind Docker context ${context}, as root: sh -c '${VM_FIREWALL_RULES.join("; ").replaceAll("'", "'\\''")}'`;
+}
+
+/** The command that applies the rules to a colima VM, `dispatch-auto` unless named. */
 export function vmFirewallCommand(profile = "dispatch-auto"): string {
   return `colima ssh --profile ${profile} -- sudo sh -c '${VM_FIREWALL_RULES.join("; ").replaceAll("'", "'\\''")}'`;
 }

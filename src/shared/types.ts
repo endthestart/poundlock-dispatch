@@ -267,6 +267,9 @@ export interface ConnectionSettings {
   profiles?: Record<string, ProfilePreference>;
 }
 
+/** What the connection step saves: the address and token. Roles are saved only with Save models, which checks them. */
+export type ConnectionAddress = Pick<ConnectionSettings, "url" | "token">;
+
 export interface ConnectionPublic {
   localManager?: LocalManagerPublic;
   escalation?: import("./escalation").EscalationSettings;
@@ -418,6 +421,10 @@ export interface PoundlockCapabilitiesView {
   api_major: number;
   contract_revision: number;
   features: string[];
+  /** Each token permission with the label Poundlock Access shows for it. */
+  token_permissions?: { code: string; label: string }[];
+  /** The permissions of the token that read these capabilities. */
+  caller_permissions?: string[];
 }
 
 export interface ConnectionProbe {
@@ -443,14 +450,8 @@ export type ForgeKind = "github" | "gitea";
 interface LocalFolderSource {
   kind: "local_folder";
   originalPath: string;
-  capturedAt: string;
-  snapshotSha256: string;
   baseRevision: string;
-  includedFiles: number;
-  includedBytes: number;
   excludedPatterns: string[];
-  includedUncommitted: boolean;
-  originalFingerprint: string;
   gitRemote?: string;
   forge?: ForgeKind;
 }
@@ -471,7 +472,6 @@ interface GitProjectSource {
   repository: string;
   /** Branch name or 40-character commit, as the user entered it. */
   revision: string;
-  capturedAt: string;
   baseRevision: string;
   hasCredentials: boolean;
   forge?: ForgeKind;
@@ -543,10 +543,6 @@ interface BudgetState {
 }
 
 interface IntegrationState {
-  /** The revision of the review workspace, which only a git project works in. */
-  headRevision: string;
-  expectedBase: string;
-  appliedPatchSha256: string[];
   /** The checks run over every accepted task together, once the last one is accepted. */
   combinedVerification?: VerificationView;
 }
@@ -555,6 +551,11 @@ export interface ProjectRecord {
   /** This conversation's reasoning choice for manager turns; overrides the Manager role default. */
   reasoningOverride?: ReasoningChoice;
   managerEscalation?: import("./escalation").EscalationGrant;
+  /**
+   * The owner's local fallback, managing since the chosen manager's provider
+   * refused for a spending limit. Choosing a manager in Project settings ends it.
+   */
+  managerFallback?: { profileId: string; profileName: string; from: string; at: string };
   escalations?: import("./escalation").EscalationDecision[];
   /**
    * Escalation profiles the owner declined this run. The manager is not
@@ -599,7 +600,6 @@ export interface ProjectRecord {
   dispatchAuthorized?: boolean;
   managerSessionId: string;
   freshConversation?: boolean;
-  eventCursor: number;
 }
 
 /**
@@ -634,6 +634,20 @@ export interface FrozenTest {
   sha256: string;
   /** Title of the accepted task that wrote or last changed it. */
   task: string;
+}
+
+/** An end-to-end test Autopilot's Planner wrote from the owner's scenarios, added frozen when its task starts. */
+/** An excerpt the Planner read on the web, saved in the run's reference packet (roadmap item 2). */
+export interface Reference {
+  id: string;
+  url: string;
+  title: string;
+  excerpt: string;
+}
+
+export interface AcceptanceTest {
+  path: string;
+  content: string;
 }
 
 /**
@@ -700,6 +714,8 @@ export interface PlanRecord {
   /** Questions and problems noted during the run, kept across plan revisions. */
   issues?: OwnerIssue[];
   verificationCommands?: string[];
+  /** The manager's suggested checks: nothing runs them until the owner confirms them at Build it. */
+  suggestedChecks?: string[];
   allowDependencyDownloads?: boolean;
   environmentNeed?: "none" | "python";
   revision: number;
@@ -771,6 +787,10 @@ export interface TaskRecord {
   frozenTestsToChange?: string[];
   /** Why those frozen tests are out of date, in the Planner's words. */
   frozenChangeReason?: string;
+  /** The Planner's acceptance tests this task must pass unchanged. */
+  acceptanceTests?: AcceptanceTest[];
+  /** Reference material for the worker: what the task cites from the packet, and its best matches. */
+  references?: Reference[];
   freshWorkerSession?: boolean;
   workerSessionKey?: string;
   /** Set once the fix-round or retry-after-interruption allowance is used up. Cleared by any explicit user decision on the task. */
@@ -878,24 +898,6 @@ export interface ChatMessage {
   kind?: "notice";
 }
 
-export interface FileEntry {
-  path: string;
-  bytes: number;
-  executable: boolean;
-  included: boolean;
-  reason?: string;
-}
-
-export interface SnapshotPreview {
-  root: string;
-  files: FileEntry[];
-  includedFiles: number;
-  includedBytes: number;
-  excludedFiles: number;
-  truncated: boolean;
-  warnings: string[];
-}
-
 export interface RunHistoryRecord {
   id: string;
   archivedAt: string;
@@ -912,6 +914,8 @@ export interface ProjectSnapshot {
   messages: ChatMessage[];
   /** The project brief the manager keeps pinned in its context, for the owner to read. Absent when there is none. */
   brief?: string;
+  /** What the manager's model calls have cost, by the catalog's prices; absent when nothing was priced. */
+  managerUsd?: number;
   selectedTaskId?: string;
 }
 
@@ -935,13 +939,15 @@ export interface LiveWorkEntry {
 
 export interface AppStateView {
   approvals?: import("./permissions").ToolApproval[];
+  /** What the manager and the Planner cost in the last 7 days, across all projects; with Autopilot only. */
+  weekUsd?: number;
   recovery?: RecoveryNotice[];
   connection: ConnectionPublic;
   probe?: ConnectionProbe;
   managerSelection?: {
     projectId: string;
     name: string;
-    origin: "default" | "project" | "escalation" | "local";
+    origin: "default" | "project" | "escalation" | "local" | "fallback";
   };
   discovery?: { refreshing: boolean; updatedAt?: string };
   integrations: IntegrationsPublic;
@@ -974,8 +980,8 @@ export interface AppStateView {
   managerDraft?: string;
   /** The selected project's newest Autopilot run (ADR 016), when it has one. */
   autopilot?: import("./auto-run").AutopilotView;
-  /** Projects an Autopilot run is building or was interrupted on, for the project list. */
-  autopilotProjects?: Record<string, "building" | "interrupted">;
+  /** Each project's newest Autopilot run in a few words (`@shared/autopilot-card`). */
+  autopilotGlances?: Record<string, import("./autopilot-card").AutopilotGlance>;
   /** Autopilot can start here: the app knows where runs live and how to start one. */
   autopilotAvailable?: boolean;
   /**
@@ -1007,26 +1013,40 @@ export const REQUIRED_PERMISSIONS = ["models:read", "inference:invoke"] as const
 /** What the terminal client's jobs commands need on top. */
 export const JOB_PERMISSIONS = ["jobs:read", "jobs:submit", "jobs:cancel"] as const;
 
-type KnownPermission = (typeof REQUIRED_PERMISSIONS)[number] | (typeof JOB_PERMISSIONS)[number];
+/**
+ * The name Poundlock Access shows for a permission: the label the controller
+ * publishes in capabilities, or the permission's code when it publishes none.
+ */
+export function permissionLabel(
+  permission: string,
+  capabilities?: Pick<PoundlockCapabilitiesView, "token_permissions">,
+): string {
+  // An empty published list falls back too: it hid the remembered labels, and a raw
+  // code such as external:invoke reached the owner (UX review, 30 Oct).
+  const labels = capabilities?.token_permissions?.length
+    ? capabilities.token_permissions
+    : publishedPermissionLabels;
+  return labels?.find((item) => item.code === permission)?.label ?? permission;
+}
 
-/** Poundlock Access checkbox labels for the API permission codes. */
-const PERMISSION_LABELS: Record<KnownPermission, string> = {
-  "models:read": "List available models",
-  "inference:invoke": "Send inference requests",
-  "jobs:read": "Read its own jobs and results",
-  "jobs:submit": "Submit jobs with supplied files",
-  "jobs:cancel": "Cancel its own jobs",
-};
+/**
+ * The controller's labels as last read in this process, for the hints raised
+ * where no capabilities are at hand (a refused request, a preflight).
+ */
+let publishedPermissionLabels: { code: string; label: string }[] | undefined;
+export function rememberPermissionLabels(labels: { code: string; label: string }[] | undefined) {
+  if (labels?.length) publishedPermissionLabels = labels;
+}
 
-const OPTIONAL_PERMISSION_LABELS: Record<string, string> = {
-  "external:invoke": "Call external providers",
-};
-
-export function permissionLabel(permission: string): string {
-  if (permission in PERMISSION_LABELS) {
-    return PERMISSION_LABELS[permission as KnownPermission];
-  }
-  return OPTIONAL_PERMISSION_LABELS[permission] ?? permission;
+/** How to give the connected application token the permissions it lacks. */
+export function grantPermissionHint(
+  permissions: readonly string[],
+  capabilities?: Pick<PoundlockCapabilitiesView, "token_permissions">,
+): string {
+  const names = permissions
+    .map((permission) => `“${permissionLabel(permission, capabilities)}”`)
+    .join(", ");
+  return `In Poundlock Access, edit this application token and tick ${names}, then test the connection again.`;
 }
 
 /**
@@ -1046,6 +1066,8 @@ export const DEFAULT_EXCLUSIONS = [
   "target/",
   // SwiftPM's build output: a Swift shell's first build counted 2,618 files as changed.
   ".build/",
+  // SvelteKit's generated output: a mutation check broke a committed vendor chunk.
+  ".svelte-kit/",
   // UI snapshots tests write for the owner; kept with the attempt, not tracked as changes.
   ".dispatch/",
   ".venv/",

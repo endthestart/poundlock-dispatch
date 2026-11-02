@@ -220,6 +220,8 @@ export interface Colours {
   readonly enabled: boolean;
   readonly mode: ColourMode;
   readonly flavour: Flavour;
+  /** Switch to another theme in place: everything holding these colours paints with it next. */
+  retheme(theme: AppearanceTheme): void;
   paint(role: ColourRole, text: string): string;
   /** Bold, italic and the like. Plain when colour is off, so a screen stays readable as text. */
   style(style: TextStyle, text: string): string;
@@ -247,13 +249,19 @@ export function createColours(options: {
   isTTY: boolean;
   env: NodeJS.ProcessEnv;
 }): Colours {
-  const flavour = resolveFlavour(options.theme, options.env);
+  let flavour = resolveFlavour(options.theme, options.env);
   const mode = resolveColourMode(options);
-  const roles = FLAVOURS[flavour].roles;
+  let roles = FLAVOURS[flavour].roles;
   return {
     enabled: mode !== "none",
     mode,
-    flavour,
+    get flavour() {
+      return flavour;
+    },
+    retheme(theme) {
+      flavour = resolveFlavour(theme, options.env);
+      roles = FLAVOURS[flavour].roles;
+    },
     paint(role, text) {
       if (!text) return text;
       const code = ansiFor(role, roles[ROLE_KEY[role]], mode);

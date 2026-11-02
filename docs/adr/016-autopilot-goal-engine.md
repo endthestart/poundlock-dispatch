@@ -1,8 +1,8 @@
 # ADR 016: Autopilot, one goal engine
 
-Status: accepted for Phase 0, 14 Oct 2026. It supersedes ADR 014's B2 (checkpoint
-supervision) and B3 (auto mode in the GUI). It amends ADR 001, 007 and 012 as noted at the
-end.
+Status: accepted 14 Oct 2026 and built through Phase 5 for Dispatch 0.3.0 (see the
+"As built" sections). It supersedes ADR 014's B2 (checkpoint supervision) and B3 (auto
+mode in the GUI). It amends ADR 001, 007 and 012 as noted at the end.
 
 ## Context
 
@@ -70,9 +70,11 @@ authority parks only the task that needs it.
 - one lock;
 - one run folder and ledger (`run.json` v2, `events.jsonl`, `status.json`, `inbox.jsonl`,
   `asks.json`, `report.md`);
-- one worker contract, `finish_task`, taken from auto mode;
-- one check runner, `runChecks` → `CheckRun`;
-- one sandbox interface, `CommandSandbox`, generalized from `AutoIsolation`.
+- one check runner, `runChecks` → `CheckRun`.
+
+Two stay parallel by design. Autopilot's workers keep auto mode's `finish_case` contract
+(`runtime/auto-worker.ts`) and its `AutoIsolation` sandbox (`core/auto/isolation.ts`);
+attended work keeps the interactive Pi worker and `runtime/sandbox.ts`.
 
 **Backends:**
 - `ContainerSandbox` (colima `dispatch-auto`) is the default.
@@ -126,6 +128,16 @@ The design held; these choices changed how it is built.
   answers through one `submit` tool and is told exactly what to fix when an answer cannot
   be used. A bound Verifier plans and gates. Without one, the worker plans and only advises
   (the Local tier), and each milestone gets one review.
+- **Acceptance first (29 Oct):** a gating Planner writes each feature's end-to-end test
+  itself, from the requirement's words and scenarios, on the task that wires the feature in.
+  Each must be a new test file with acceptance in its name. Dispatch adds it when that task
+  starts, never sooner, so earlier tasks' checks stay green. An attempt that changes it is
+  refused and the test put back. Once a checkpoint holds it, it is frozen for the run, and a
+  wrong one goes to the frozen-test decision. The Local tier's Planner writes none.
+- **A first attempt gets two thirds of its case (30 Oct).** It is then stopped and checked, and
+  the rest of the case's time is for a repair. In October 12 of the 15 cases abandoned on time
+  spent 80 of 90 minutes or more on their first attempt, so no repair ever ran, while 90% of
+  accepted cases finished their first attempt within 51 minutes.
 - **Greenfield goals** skip the base checks, since an empty repository has nothing to
   check. Every task is still accepted only on the checks.
 - **Dependencies mid-run:** workers call `install_dependencies`, which runs the project's
@@ -142,6 +154,11 @@ The design held; these choices changed how it is built.
 - **Poundlock's queue** (contract revision 5) holds a request for a busy model in line
   instead of refusing it. Dispatch asks for owner priority for the manager's turns,
   planner priority for the Planner, and worker priority for workers.
+- **Scoring a run** against the plan's exit gates is a manual tool:
+  `node --experimental-strip-types scripts/score-goal.ts <run folder> [plan.json]` reads the
+  ledger and reports requirements verified, interventions after start (the owner's messages;
+  pauses and resumes are counted apart, owner 30 Oct), stops by cause, the mutation check's
+  catch rate and hours. Nothing in the app runs it.
 
 ## As built (Phase 5)
 

@@ -10,7 +10,6 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import type { EditGuardEvidence, WorkerPort } from "@core/interactive-worker";
-import { MemoryPoundlock } from "@core/memory-poundlock";
 import { type ManagerPort, ProjectOrchestrator } from "@core/orchestration";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
@@ -26,6 +25,7 @@ import {
 } from "@runtime/policy-extension";
 import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./support/edit-guard-harness";
+import { MemoryPoundlock } from "./support/memory-poundlock";
 import { tempDir } from "./support/temp-dir";
 
 function chunk(delta: Record<string, unknown>, finish: string | null) {

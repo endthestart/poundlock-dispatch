@@ -1,4 +1,4 @@
-# Poundlock Dispatch 0.1.3 acceptance
+# Poundlock Dispatch acceptance
 
 Automated checks establish contracts and packaging. They do not establish that a
 particular model can manage or implement a project. Complete the short packaged
@@ -20,14 +20,15 @@ saved conversation without replaying manager or worker actions.
 ## First-use workflow
 
 1. Start with an isolated Dispatch data directory.
-2. Connect to a Poundlock 0.1.3 controller and test an application token.
+2. Connect to a Poundlock controller of the version `compat/poundlock.json` was
+   tested with, and test an application token.
 3. Confirm API major 1, contract revision 3 or newer, and the required features
    from `compat/poundlock.json`.
 4. Map separate Manager and Workers defaults. Confirm each choice shows its data
    destination before its transport, for example **Your infrastructure · via
    LiteLLM**.
-5. If the Manager is external, use a token with **Allow prompts and files to
-   leave the controlled network**. Saving the default records the exact profile,
+5. If the Manager is external, use a token with **Send prompts and files to
+   external services**. Saving the default records the exact profile,
    destination, and routing revision. The same unchanged default must not prompt
    again. A changed route or destination must stop before sending context.
 6. Add a disposable local folder and verify that New conversation, Start a new run, History, Pause,

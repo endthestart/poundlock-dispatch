@@ -12,26 +12,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/**
- * Keep the conversation column usable at the supported minimum window width.
- * Stored sidebar preferences are retained; only the displayed widths shrink.
- */
-export function fitPanelWidths(
-  windowWidth: number,
-  left: number,
-  right: number,
-): { left: number; right: number } {
-  const budget = Math.max(0, windowWidth - PANEL_HANDLE_PX * 2 - MIN_MAIN_PX);
-  let nextLeft = clamp(left, LEFT_PANEL.min, LEFT_PANEL.max);
-  let nextRight = clamp(right, RIGHT_PANEL.min, RIGHT_PANEL.max);
-  if (nextLeft + nextRight <= budget) return { left: nextLeft, right: nextRight };
-  const overflow = nextLeft + nextRight - budget;
-  const shrinkRight = Math.min(overflow, Math.max(0, nextRight - RIGHT_PANEL.min));
-  nextRight -= shrinkRight;
-  nextLeft = Math.max(LEFT_PANEL.min, nextLeft - (overflow - shrinkRight));
-  return { left: nextLeft, right: nextRight };
-}
-
 /** What the user asked for. Stored separately from what is displayed. */
 export interface PanelPreferences {
   left: number;

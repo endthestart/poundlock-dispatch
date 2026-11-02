@@ -2,7 +2,7 @@ import type { CompactionSummary } from "@shared/compaction";
 import type { EditGuardEvidence } from "@shared/edit-guard";
 import type { ToolTrustMode } from "@shared/permissions";
 import type { InteractiveModel, ProjectRecord, TaskRecord, VerificationView } from "@shared/types";
-import type { ApprovalBroker } from "./approval-broker";
+import type { ApprovalRequester } from "./attempt-limit";
 
 export interface WorkerContext {
   project: ProjectRecord;
@@ -27,6 +27,8 @@ export interface WorkerContext {
     signal: AbortSignal,
   ) => Promise<import("./permission-review").ReviewDecision>;
   allowDependencyDownloads: boolean;
+  /** `verify` only: stop at the first check that fails, enough to tell a mutant was caught. */
+  stopOnFailure?: boolean;
   /** Frozen test files (project-relative) this worker may read and run but never change. */
   frozenPaths?: string[];
   extraPath?: string[];
@@ -40,7 +42,7 @@ export interface WorkerContext {
    * and commands only inside a sandbox that cannot write the project.
    */
   readOnly?: boolean;
-  approvals: ApprovalBroker;
+  approvals: ApprovalRequester;
   onActivity?: (message: string) => void;
 }
 export type { EditGuardEvidence };

@@ -1,3 +1,5 @@
+import type { ApprovalBroker } from "./approval-broker.js";
+
 /** Interactive local workers stop after this budget so a stuck session cannot run forever. */
 export const INTERACTIVE_ATTEMPT_MS = 45 * 60_000;
 
@@ -7,4 +9,45 @@ export const INTERACTIVE_ATTEMPT_LIMIT_ERROR =
 export function isAttemptTimeLimit(input?: { error?: string } | string): boolean {
   const error = typeof input === "string" ? input : (input?.error ?? "");
   return /45-minute attempt limit/i.test(error);
+}
+
+export type ApprovalRequester = Pick<ApprovalBroker, "request">;
+
+/**
+ * An attempt's clock, stopped while the owner decides an approval: a plan
+ * review waited 45 minutes for `cargo --version` and timed out with nothing
+ * to show. Waiting on the owner is not being stuck.
+ */
+export function attemptClock(expire: () => void, budgetMs = INTERACTIVE_ATTEMPT_MS) {
+  let left = budgetMs;
+  let since = Date.now();
+  let waiting = 0;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(expire, left);
+  const pause = () => {
+    if (waiting++ || stopped) return;
+    clearTimeout(timer);
+    left -= Date.now() - since;
+  };
+  const resume = () => {
+    if (--waiting || stopped) return;
+    since = Date.now();
+    timer = setTimeout(expire, Math.max(0, left));
+  };
+  return {
+    approvals: (broker: ApprovalRequester): ApprovalRequester => ({
+      request: async (input, signal) => {
+        pause();
+        try {
+          return await broker.request(input, signal);
+        } finally {
+          resume();
+        }
+      },
+    }),
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+    },
+  };
 }

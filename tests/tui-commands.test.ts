@@ -26,6 +26,13 @@ describe("roleArgumentCompletions", () => {
     expect(roleArgumentCompletions("manager front")).toBeNull();
   });
 
+  it("closes the menu once a role is typed in full, so Enter sends the command", () => {
+    // Found driving the real terminal: with the menu still open, Enter took the
+    // completion and the command waited for a second Enter.
+    expect(roleArgumentCompletions("manager")).toBeNull();
+    expect(roleArgumentCompletions("manage")?.map((item) => item.value)).toEqual(["manager"]);
+  });
+
   it("suggests nothing for a prefix that matches no role", () => {
     expect(roleArgumentCompletions("wizard")).toBeNull();
   });

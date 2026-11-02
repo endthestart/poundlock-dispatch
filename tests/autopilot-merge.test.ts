@@ -1,16 +1,17 @@
 /**
  * Merging an ended Autopilot run (ADR 016): a fast-forward of the owner's
  * folder to the run's last verified commit, refused whenever it would rewrite
- * anything of the owner's.
+ * anything of the owner's. And dropping one: its working copy goes for good,
+ * while its verified work can still be merged.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { mergePreview, mergeRun } from "@core/auto/control";
+import { cleanupCandidates, dropRun, mergePreview, mergeRun, resumeRun } from "@core/auto/control";
 import { AutoLedger } from "@core/auto/ledger";
 import { AutoPaths, type AutoRunFile, projectKey, writeRunFile } from "@core/auto/runs";
-import { DEFAULT_AUTO_LIMITS } from "@shared/auto-run";
+import { type AutoOutcome, DEFAULT_AUTO_LIMITS } from "@shared/auto-run";
 import { expect, it } from "vitest";
 import { tempDir } from "./support/temp-dir";
 
@@ -19,8 +20,11 @@ const git = (cwd: string, ...args: string[]) =>
     .toString()
     .trim();
 
-/** A folder, its mirror with a run branch one verified commit ahead, and the ended run. */
-async function endedRun() {
+/**
+ * A folder, its mirror with a run branch one verified commit ahead, and the
+ * ended run. With `worktree`, the run's clone is recorded as its working copy.
+ */
+async function endedRun(options: { worktree?: boolean; outcome?: AutoOutcome } = {}) {
   const source = await realpath(await tempDir("merge-src-"));
   git(source, "init", "-q", "-b", "main");
   await writeFile(join(source, "greet.py"), "def hello():\n    return 'hi'\n");
@@ -56,6 +60,7 @@ async function endedRun() {
     baseCommit: base,
     branch: `auto/${runId}`,
     mirror,
+    ...(options.worktree ? { worktree: work } : {}),
     cases: [],
   } as unknown as AutoRunFile);
   const ledger = new AutoLedger(runDir);
@@ -77,11 +82,14 @@ async function endedRun() {
   await ledger.append({ type: "case_accepted", caseId: "T1" });
   await ledger.append({
     type: "run_ended",
-    outcome: "objective_met",
+    outcome: options.outcome ?? "objective_met",
     reason: "every case verified",
   });
-  return { source, runDir, base, head, work, mirror, runId };
+  return { source, runDir, base, head, work, mirror, runId, paths };
 }
+
+/** Past the grace a just-created run gets for its runner to start. */
+const later = () => new Date(Date.now() + 60_000);
 
 it("fast-forwards a clean folder at the run's base, naming files that run here first", async () => {
   const { source, runDir, head } = await endedRun();
@@ -147,4 +155,43 @@ it("merges again after a checkpoint, from the run's earlier commit", async () =>
   expect(preview).toMatchObject({ head: later, commits: 1, files: 1 });
   await mergeRun(run.runDir);
   expect(git(run.source, "rev-parse", "HEAD")).toBe(later);
+});
+
+it("removes a finished run's working copy once it is merged, and keeps a resumable one's", async () => {
+  const finished = await endedRun({ worktree: true });
+  await mergeRun(finished.runDir);
+  expect(existsSync(finished.work)).toBe(false);
+
+  const stopped = await endedRun({ worktree: true, outcome: "cancelled_after_checkpoint" });
+  await mergeRun(stopped.runDir);
+  expect(existsSync(stopped.work)).toBe(true);
+});
+
+it("drops a run for good: its working copy goes, and its verified work can still be merged", async () => {
+  const run = await endedRun({ worktree: true, outcome: "cancelled_after_checkpoint" });
+  expect((await cleanupCandidates(run.paths, later())).map((item) => item.runId)).toEqual([
+    run.runId,
+  ]);
+  await dropRun(run.paths, run.runDir, {}, later());
+  expect(existsSync(run.work)).toBe(false);
+  expect((await new AutoLedger(run.runDir).state()).dropped).toBe(true);
+  const spawned: string[] = [];
+  expect(await resumeRun(run.paths, run.runDir, (dir) => spawned.push(dir))).toBe("dropped");
+  expect(spawned).toEqual([]);
+  expect(await cleanupCandidates(run.paths, later())).toEqual([]);
+  await mergeRun(run.runDir);
+  expect(git(run.source, "rev-parse", "HEAD")).toBe(run.head);
+});
+
+it("refuses to drop a run its runner is still working", async () => {
+  const run = await endedRun({ worktree: true, outcome: "cancelled_after_checkpoint" });
+  const runner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", run.runDir]);
+  try {
+    await writeFile(join(run.runDir, "runner.pid"), `${runner.pid}\n`);
+    await expect(dropRun(run.paths, run.runDir, {}, later())).rejects.toThrow(/Stop the/);
+    expect(await cleanupCandidates(run.paths, later())).toEqual([]);
+    expect(existsSync(run.work)).toBe(true);
+  } finally {
+    runner.kill();
+  }
 });

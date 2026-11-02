@@ -7,7 +7,11 @@
  * Accepted work is verified, not reviewed: nothing here may say otherwise.
  */
 
+import { duration, limitText } from "./autopilot-card.js";
 import type { EditGuardEvidence } from "./edit-guard";
+import { fallbackNotice } from "./spending-limit";
+import type { AcceptanceTest } from "./types";
+import type { WebCallRecord } from "./web-search";
 
 /** B1 runs detached only; checkpoint supervision waits for research R6. */
 export type Supervision = "detached";
@@ -81,6 +85,8 @@ export interface AutoCase {
   frozenTestsToChange?: string[];
   /** Why they are out of date, in the Planner's words. */
   frozenChangeReason?: string;
+  /** The Planner's acceptance tests: Dispatch adds them when the case starts, frozen. */
+  acceptanceTests?: AcceptanceTest[];
   /** Ledger requirements this case serves (ADR 016). */
   requirementIds?: string[];
   /** The spec milestone it belongs to (ADR 016). */
@@ -243,16 +249,20 @@ export type AutoEvent =
   /** A web search or page fetch the Planner made, or one Dispatch refused. */
   | {
       type: "web_call";
-      tool: "web_search" | "web_fetch";
+      tool: WebCallRecord["tool"];
       target: string;
       status: string;
       size?: number;
     }
-  /** Checks that failed only in untouched frozen tests, run once more. */
-  /** No case: the base checks at the start. */
+  /**
+   * Checks that failed only in untouched frozen tests, run once more. No case:
+   * the base checks at the start.
+   */
   | { type: "checks_rerun"; caseId?: string; attempt?: number; tests: string[]; passed: boolean }
   /** The Planner let the rest of the run change these frozen tests (Frontier tier). */
   | { type: "frozen_allowed"; caseId: string; allowed: Array<{ path: string; reason: string }> }
+  /** A cloud role its provider refused for a spending limit moved to the local fallback. */
+  | ({ type: "model_fallback" } & import("./spending-limit").ModelFallback)
   /** The mutation check on a case's work: each small break tried, and whether the checks caught it. */
   | {
       type: "mutation";
@@ -260,9 +270,13 @@ export type AutoEvent =
       attempt: number;
       mutants: Array<{ path: string; line: number; change: string; caught: boolean }>;
     }
+  /** What a case, or Dispatch, learned for the cases after it; kept across resumes. */
+  | { type: "learned"; texts: string[] }
   /** An inbox entry the runner took: pause, stop now, or a message from the owner (ADR 016). */
   | { type: "inbox"; id: string; cmd: InboxCommand; text?: string }
-  | { type: "run_ended"; outcome: AutoOutcome; reason: string };
+  | { type: "run_ended"; outcome: AutoOutcome; reason: string }
+  /** The owner dropped the ended run: its worktree is gone, and it is never resumed. */
+  | { type: "run_dropped" };
 
 /** What the owner chooses when Autopilot starts building an approved plan. */
 export interface AutopilotStartOptions {
@@ -279,6 +293,8 @@ export interface AutopilotStartOptions {
   acceptAlreadyMet?: boolean;
   /** Setup commands, run before the base checks. */
   prepare?: string[];
+  /** The checks the owner confirmed at start; they become the project's. */
+  checks?: string[];
   /** Where the run may write; unset, it may write anywhere but protected paths. */
   scope?: { writable?: string[]; bookkeeping?: string[]; protectedPaths?: string[] };
   /** For a plan with milestones: wait at each one, or only say it is done. Notify by default. */
@@ -307,12 +323,24 @@ export interface AutopilotView {
   runDir: string;
   /** Preparing: setup and the base checks. Interrupted: unfinished, with no runner. */
   phase: "preparing" | "running" | "interrupted" | "ended";
+  /** The ledger's last event: an interrupted run's clock stops there. */
+  lastEventAt?: string;
   outcome?: AutoOutcome;
   outcomeLabel?: string;
   endReason?: string;
   stopRequested?: "after_case" | "now";
-  /** The progress card's lines. */
+  /** The progress card's lines, shown under Details. */
   lines: string[];
+  /** For the run card (`@shared/autopilot-card`). */
+  startedAt?: string;
+  endedAt?: string;
+  softHours: number;
+  /** Roles that moved to the local fallback after a spending refusal. */
+  fallbacks?: import("./spending-limit").ModelFallback[];
+  plannerUsd?: number;
+  plannerCapUsd?: number;
+  activity?: string;
+  current?: { title: string; attempt: number };
   cases: Array<{ id: string; title: string; stage: CaseStage; reason?: string }>;
   branch: string;
   mirror: string;
@@ -326,6 +354,22 @@ export interface AutopilotView {
   milestones?: MilestoneState[];
   /** The morning report, once the run has ended and written it. */
   report?: string;
+  /** The owner dropped the run; it can still be merged or exported, never resumed. */
+  dropped?: boolean;
+  /** The run's worktree, with whatever setup installed in it, is still on disk. */
+  workingCopy: boolean;
+}
+
+/** An ended run whose worktree can go, as the cleanup lists it. */
+export interface AutopilotCleanupItem {
+  runId: string;
+  /** The project folder the run built from. */
+  source: string;
+  createdAt: string;
+  /** How it ended, in words. */
+  ended: string;
+  /** What its worktree takes on disk; undefined when it could not be measured. */
+  bytes?: number;
 }
 
 export interface LedgerEntry {
@@ -352,20 +396,54 @@ export interface CaseState {
 }
 
 /**
- * An unfinished case as the Planner reads it: why it stopped and what its
- * worker last reported. A worker that fixed a defect but tripped a frozen test,
- * or traced a cause and ran out of time, had its findings dropped.
+ * An unfinished case as the Planner reads it: why it stopped, what it was last
+ * sent back to fix and what its worker last reported. A worker that fixed a defect but
+ * tripped a frozen test, or traced a cause and ran out of time, had its findings
+ * dropped; one out of time reported its work done, and without the failing check
+ * the Planner read it as no work at all.
  */
+/** Why an attempt is stopped when its case's allowance or the run's hard limit runs out. */
+export const OUT_OF_TIME = "case allowance or hard limit reached";
+/** Why a case's first attempt is stopped at its share, so its checks and a repair still fit. */
+export const FIRST_ATTEMPT_ENDED =
+  "the first attempt's share of the case ran out; the rest is for its checks and finishing it";
+
+/** Whether a failure is only a stop for time, which says nothing about the work. */
+export function stoppedForTime(failure: string): boolean {
+  return failure.includes(OUT_OF_TIME) || failure.includes(FIRST_ATTEMPT_ENDED);
+}
+
 export function unfinishedLine(
   title: string,
-  item: Pick<CaseState, "stage" | "reason" | "lastReport">,
+  item: Pick<CaseState, "stage" | "reason" | "lastReport" | "lastFailure">,
 ): string {
   const reason = item.reason ? `: ${item.reason.slice(0, 600)}` : "";
+  const failure =
+    item.lastFailure &&
+    item.stage !== "skipped" &&
+    !stoppedForTime(item.lastFailure) &&
+    !item.reason?.includes(item.lastFailure)
+      ? ` It was last sent back for: ${item.lastFailure.slice(0, 600)}`
+      : "";
   const report =
     item.lastReport && item.stage !== "skipped"
       ? ` The worker's last report: ${item.lastReport.slice(0, 600)}`
       : "";
-  return `${title} (${item.stage}${reason})${report}`;
+  return `${title} (${item.stage}${reason})${failure}${report}`;
+}
+
+/** Cases that ended without their work after `seq`, such as a milestone's last review. */
+export function endedWithoutWorkSince(entries: LedgerEntry[], seq: number): Set<string> {
+  return new Set(
+    entries.flatMap(({ seq: at, event }) =>
+      at > seq &&
+      (event.type === "case_abandoned" ||
+        event.type === "case_blocked" ||
+        event.type === "case_skipped")
+        ? [event.caseId]
+        : [],
+    ),
+  );
 }
 
 export interface MilestoneState {
@@ -394,8 +472,12 @@ export interface AutoRunState {
   isolation?: string;
   startedAt?: string;
   endedAt?: string;
+  /** The ledger's last event: where a stopped runner's run stands still. */
+  lastEventAt?: string;
   outcome?: AutoOutcome;
   endReason?: string;
+  /** The owner dropped the run: it is never resumed, and its worktree is gone. */
+  dropped?: boolean;
   /** Unset until setup and the base checks have run; "failed" ends the run before any case. */
   preflight?: "passed" | "failed";
   environmentPaths: string[];
@@ -413,6 +495,8 @@ export interface AutoRunState {
   ownerMessages?: Array<{ id: string; text: string; at: string }>;
   /** Frozen tests changed with the Planner's leave, for the report. */
   frozenChanges?: Array<{ caseId: string; paths: string[]; reason?: string }>;
+  /** Roles that moved to the local fallback, kept across a resume. */
+  fallbacks?: import("./spending-limit").ModelFallback[];
   /** The checks failed at the start of this goal run, until a case is accepted. */
   baseFailing?: string;
   limitsHit: Array<{ kind: string; level: "soft" | "hard" }>;
@@ -475,7 +559,7 @@ export function reduceAutoEvents(entries: LedgerEntry[]): AutoRunState {
         }));
         break;
       case "planner_cost":
-        state.plannerUsd = (state.plannerUsd ?? 0) + event.costUsd;
+        state.plannerUsd = (state.plannerUsd ?? 0) + plannerCostOf(event);
         break;
       case "milestone_planned":
       case "milestone_review":
@@ -486,8 +570,7 @@ export function reduceAutoEvents(entries: LedgerEntry[]): AutoRunState {
           milestone = { id: event.milestoneId, stage: "planned", reviews: 0, verdicts: [] };
           state.milestones.push(milestone);
         }
-        if (event.type !== "milestone_done" && event.costUsd)
-          state.plannerUsd = (state.plannerUsd ?? 0) + event.costUsd;
+        if (plannerCostOf(event)) state.plannerUsd = (state.plannerUsd ?? 0) + plannerCostOf(event);
         if (event.type === "milestone_review") {
           milestone.reviews++;
           milestone.verdicts = event.verdicts;
@@ -615,6 +698,14 @@ export function reduceAutoEvents(entries: LedgerEntry[]): AutoRunState {
           ...(event.reason ? { reason: event.reason } : {}),
         });
         break;
+      case "model_fallback":
+        (state.fallbacks ??= []).push({
+          role: event.role,
+          from: event.from,
+          to: event.to,
+          reason: event.reason,
+        });
+        break;
       case "capacity_waited": {
         // A busy model is not a stuck run: the no-progress clock leaves the wait out.
         const from = state.lastSubstantiveAt ?? state.startedAt;
@@ -653,22 +744,26 @@ export function reduceAutoEvents(entries: LedgerEntry[]): AutoRunState {
         state.current = undefined;
         state.waiting = undefined;
         break;
+      case "run_dropped":
+        state.dropped = true;
+        break;
       default:
         break;
     }
     lastAt = at;
   }
+  if (lastAt) state.lastEventAt = lastAt;
   return state;
 }
 
 /** What each outcome means, in words that never imply review. */
 export const OUTCOME_LABELS: Record<AutoOutcome, string> = {
-  objective_met: "every case verified (not reviewed)",
+  objective_met: "every task verified (not reviewed)",
   limit_reached_with_accepted_work: "stopped at a limit; verified work kept",
-  limit_reached_without_accepted_work: "stopped at a limit before any case was verified",
+  limit_reached_without_accepted_work: "stopped at a limit before any task was verified",
   blocked_for_input: "needs you",
   cancelled_after_checkpoint: "stopped; verified work kept",
-  failed: "no case could be verified",
+  failed: "no task could be verified",
   indeterminate_needs_reconciliation: "unclear; check the run before resuming",
 };
 
@@ -696,9 +791,10 @@ export function autoProgressView(
   details: { activity?: string; runnerStopped?: boolean } = {},
 ): string[] {
   const count = (stage: CaseStage) => state.cases.filter((c) => c.stage === stage).length;
-  const elapsed = minutesBetween(state.startedAt, state.endedAt ? new Date(state.endedAt) : now);
-  const head = `Auto ${state.runId ?? "?"} · ${state.supervision}${state.model ? ` · ${state.model}` : ""} · ${hm(elapsed)} of ${state.limits.softHours}h`;
-  const counts = `Cases ${count("accepted")}/${state.cases.length} verified, not reviewed · ${count("blocked")} blocked · ${count("abandoned")} abandoned`;
+  const stoppedAt = state.endedAt ?? (details.runnerStopped ? state.lastEventAt : undefined);
+  const elapsed = minutesBetween(state.startedAt, stoppedAt ? new Date(stoppedAt) : now);
+  const head = `Auto ${state.runId ?? "?"} · ${state.supervision}${state.model ? ` · ${state.model}` : ""} · ${duration(elapsed)} of ${limitText(state.limits.softHours)}`;
+  const counts = `Tasks ${count("accepted")}/${state.cases.length} verified, not reviewed · ${count("blocked")} blocked · ${count("abandoned")} abandoned`;
   const current = state.current
     ? (() => {
         const c = state.cases.find((x) => x.id === state.current?.caseId);
@@ -722,6 +818,7 @@ export function autoProgressView(
         .join(" · ")}${state.plannerUsd ? ` · Planner about $${state.plannerUsd.toFixed(2)}` : ""}`,
     );
   if (state.isolation) lines.push(`Commands run in ${state.isolation}`);
+  for (const fallback of state.fallbacks ?? []) lines.push(fallbackNotice(fallback));
   if (state.outcome)
     lines.push(`Ended: ${OUTCOME_LABELS[state.outcome]} — ${state.endReason ?? ""}`);
   else if (details.runnerStopped) lines.push("The runner is not running. Resume the run to go on.");
@@ -733,4 +830,12 @@ export function autoProgressView(
     );
   else if (details.activity) lines.push(`Now: ${details.activity}`);
   return lines;
+}
+
+/** What a ledger event says the Planner cost, in dollars: its own record or a milestone's. */
+export function plannerCostOf(event: AutoEvent): number {
+  if (event.type === "planner_cost") return event.costUsd;
+  if (event.type === "milestone_planned" || event.type === "milestone_review")
+    return event.costUsd ?? 0;
+  return 0;
 }

@@ -1,3 +1,8 @@
+import {
+  autopilotMessageHint,
+  autopilotOwnsStatus,
+  autopilotTakesMessages,
+} from "@shared/autopilot-card";
 import { composerSendBlocked, submitComposerDraft } from "@shared/composer-guard";
 import { conversationTimeline } from "@shared/live-work-view";
 import { projectNeedsYou } from "@shared/needs-you";
@@ -10,7 +15,7 @@ import {
   managerChoice,
   profileDisplayName,
 } from "@shared/roles";
-import { projectStatusTone } from "@shared/status-tone";
+import { CARD_TONES, projectGlance, projectStatusTone } from "@shared/status-tone";
 import {
   type AppStateView,
   type ForgeKind,
@@ -26,6 +31,7 @@ import { useConversationFollow } from "./conversation-follow";
 import { Dialog } from "./dialog";
 import { usePanelLayout } from "./layout";
 import { Markdown } from "./Markdown";
+import { PaneBoundary } from "./pane-boundary";
 import { ProjectMenu } from "./project-menu";
 import {
   ComposerInfolets,
@@ -40,6 +46,7 @@ import {
 } from "./project-panes";
 import { SettingsModal } from "./project-settings";
 import { type SettingsNav, SettingsPage, SetupWizard } from "./settings";
+import { DensityChip, useTranscriptDensity } from "./transcript-density";
 
 function currentTaskPlace(selected: NonNullable<AppStateView["snapshot"]>): string | undefined {
   return selected.tasks.some((item) => IN_FLIGHT.includes(item.status))
@@ -65,6 +72,7 @@ export function App() {
   const conversationProject = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
   const layout = usePanelLayout();
+  const [density, setDensity] = useTranscriptDensity();
 
   useEffect(() => {
     if (!window.poundlockDispatch) {
@@ -95,8 +103,8 @@ export function App() {
   const statusView = selected
     ? projectStatusView(selected, { approvals: state?.approvals })
     : undefined;
-  // While Autopilot works the project, its panel is the project's status.
-  const autopilotLive = ["preparing", "running"].includes(state?.autopilot?.phase ?? "");
+  const autopilotPhase = state?.autopilot?.phase;
+  const glance = selected ? projectGlance(selected.project, state?.autopilotGlances) : undefined;
 
   // Opening another project starts at its latest message. Anything that
   // arrives afterwards is followed by the hook, however it arrives.
@@ -189,7 +197,10 @@ export function App() {
   const sendDisabledReason =
     sendBlocked ??
     (state.busy && !(state.managerTurning && !selected?.project.needsInput)
-      ? "The Project Manager is working. Keep typing; Send is available when it finishes."
+      ? // Named for who holds the project: Autopilot's own actions are not the manager's (UX review, 30 Oct).
+        autopilotTakesMessages(state.autopilot)
+        ? "Autopilot is busy with your last request. Keep typing; Send is available when it finishes."
+        : "The Project Manager is working. Keep typing; Send is available when it finishes."
       : undefined);
 
   function compactConversation() {
@@ -245,11 +256,8 @@ export function App() {
                     {needsYou ? <span className="sr-only">Needs you. </span> : null}
                     <span className="name">{project.name}</span>
                     <span className="meta">
-                      {state.autopilotProjects?.[project.id] === "building"
-                        ? "Autopilot"
-                        : state.autopilotProjects?.[project.id] === "interrupted"
-                          ? "Autopilot stopped"
-                          : statusLabel(project.status)}
+                      {projectGlance(project, state.autopilotGlances)?.label ??
+                        statusLabel(project.status)}
                     </span>
                   </button>
                 </li>
@@ -293,153 +301,173 @@ export function App() {
 
   return (
     <div className="app">
-      {leftVisible ? sidebar : null}
+      {leftVisible ? <PaneBoundary name="The projects list">{sidebar}</PaneBoundary> : null}
       {fit.leftDocked ? <div {...layout.separatorProps("left", "Resize projects panel")} /> : null}
-      <main className="main">
-        <header className="chat-head">
-          <button
-            type="button"
-            className="icon-btn panel-toggle"
-            aria-label={leftVisible ? "Hide projects panel" : "Show projects panel"}
-            aria-expanded={leftVisible}
-            title={leftVisible ? "Hide projects panel" : "Show projects panel"}
-            onClick={() => layout.toggle("left")}
-          >
-            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
-              <rect x="2" y="3" width="12" height="10" rx="1.5" />
-              <path d="M6 3v10" />
-            </svg>
-          </button>
-          {selected ? (
-            <div className="chat-title">
-              <h1>{selected.project.name}</h1>
-              {autopilotLive ? (
-                <span className="state-pill tone-active">Autopilot</span>
-              ) : (
-                <span
-                  className={`state-pill ${projectStatusTone(selected.project.status, statusView?.active ?? false)}`}
+      <PaneBoundary name="The conversation" resetKey={selected?.project.id}>
+        <main className="main">
+          <header className="chat-head">
+            <button
+              type="button"
+              className="icon-btn panel-toggle"
+              aria-label={leftVisible ? "Hide projects panel" : "Show projects panel"}
+              aria-expanded={leftVisible}
+              title={leftVisible ? "Hide projects panel" : "Show projects panel"}
+              onClick={() => layout.toggle("left")}
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                <rect x="2" y="3" width="12" height="10" rx="1.5" />
+                <path d="M6 3v10" />
+              </svg>
+            </button>
+            {selected ? (
+              <div className="chat-title">
+                <h1>{selected.project.name}</h1>
+                {glance ? (
+                  <span className={`state-pill ${CARD_TONES[glance.tone]}`}>{glance.label}</span>
+                ) : (
+                  <span
+                    className={`state-pill ${projectStatusTone(selected.project.status, statusView?.active ?? false)}`}
+                  >
+                    {statusLabel(selected.project.status)}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="chat-title">
+                <h1>Poundlock Dispatch</h1>
+              </div>
+            )}
+            <span className="spacer" />
+            {selected ? (
+              <ProjectMenu
+                state={state}
+                selected={selected}
+                onHistory={() =>
+                  void run(async () => {
+                    setHistory(await window.poundlockDispatch.runHistory());
+                  })
+                }
+                onSettings={() => setShowProjectSettings(true)}
+                onCompact={compactConversation}
+                onState={setState}
+                onDraftReset={() => setDraft("")}
+              />
+            ) : null}
+            <button
+              type="button"
+              className="icon-btn panel-toggle"
+              aria-label={rightVisible ? "Hide plan and tasks panel" : "Show plan and tasks panel"}
+              aria-expanded={rightVisible}
+              title={rightVisible ? "Hide plan and tasks panel" : "Show plan and tasks panel"}
+              onClick={() => layout.toggle("right")}
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                <rect x="2" y="3" width="12" height="10" rx="1.5" />
+                <path d="M10 3v10" />
+              </svg>
+            </button>
+          </header>
+          {selected && managerName ? (
+            <p className="manager-model-line">
+              Manager: <strong>{managerName}</strong> ·{" "}
+              {managerOrigin === "default"
+                ? "App default"
+                : managerOrigin === "project"
+                  ? "Project override"
+                  : managerOrigin === "local"
+                    ? "This computer"
+                    : managerOrigin === "fallback"
+                      ? "Local fallback after a spending limit"
+                      : "Model ladder"}
+            </p>
+          ) : null}
+          {state.watching ? (
+            // A mode, not an alert: role="status", no error styling, no Dismiss —
+            // there is nothing to dismiss, and it goes away by itself when the
+            // other client releases the folder.
+            <div className="notice watching" role="status">
+              <span>
+                Watching this project.{" "}
+                {state.watching.heldBy === "tui"
+                  ? "The terminal client is driving the work."
+                  : state.watching.heldBy === "gui"
+                    ? "The desktop app is driving the work."
+                    : "Another Poundlock Dispatch client is driving the work."}{" "}
+                Everything here is live; only starting new work is held.
+              </span>
+            </div>
+          ) : null}
+          {error || info || state.notice ? (
+            <div
+              className={`notice ${error || (!info && state.notice?.kind === "error") ? "error" : ""}`}
+              role={error ? "alert" : "status"}
+            >
+              <span>{error || info || state.notice?.text}</span>
+              {error || info ? (
+                <button
+                  type="button"
+                  className="quiet small"
+                  onClick={() => {
+                    setError(undefined);
+                    setInfo(undefined);
+                  }}
                 >
-                  {statusLabel(selected.project.status)}
-                </span>
+                  Dismiss
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {!selected ? (
+            <div className="empty">
+              {state.projects.some((project) => !project.archived) ? (
+                <>
+                  <h2>Choose a project</h2>
+                  <p>Pick one from the list to see its conversation, plan and Autopilot runs.</p>
+                  <button type="button" onClick={() => setShowNew(true)}>
+                    Add another project
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h2>Start with a project</h2>
+                  <p>
+                    Add a folder on this Mac or a Git repository. Work happens there; manager notes
+                    stay in Poundlock Dispatch, not the repository.
+                  </p>
+                  <button type="button" className="primary" onClick={() => setShowNew(true)}>
+                    Add project
+                  </button>
+                </>
               )}
             </div>
           ) : (
-            <div className="chat-title">
-              <h1>Poundlock Dispatch</h1>
-            </div>
-          )}
-          <span className="spacer" />
-          {selected ? (
-            <ProjectMenu
-              state={state}
-              selected={selected}
-              onHistory={() =>
-                void run(async () => {
-                  setHistory(await window.poundlockDispatch.runHistory());
-                })
-              }
-              onSettings={() => setShowProjectSettings(true)}
-              onCompact={compactConversation}
-              onState={setState}
-              onDraftReset={() => setDraft("")}
-            />
-          ) : null}
-          <button
-            type="button"
-            className="icon-btn panel-toggle"
-            aria-label={rightVisible ? "Hide plan and tasks panel" : "Show plan and tasks panel"}
-            aria-expanded={rightVisible}
-            title={rightVisible ? "Hide plan and tasks panel" : "Show plan and tasks panel"}
-            onClick={() => layout.toggle("right")}
-          >
-            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
-              <rect x="2" y="3" width="12" height="10" rx="1.5" />
-              <path d="M10 3v10" />
-            </svg>
-          </button>
-        </header>
-        {selected && managerName ? (
-          <p className="manager-model-line">
-            Manager: <strong>{managerName}</strong> ·{" "}
-            {managerOrigin === "default"
-              ? "App default"
-              : managerOrigin === "project"
-                ? "Project override"
-                : managerOrigin === "local"
-                  ? "This computer"
-                  : "Model ladder"}
-          </p>
-        ) : null}
-        {state.watching ? (
-          // A mode, not an alert: role="status", no error styling, no Dismiss —
-          // there is nothing to dismiss, and it goes away by itself when the
-          // other client releases the folder.
-          <div className="notice watching" role="status">
-            <span>
-              Watching this project.{" "}
-              {state.watching.heldBy === "tui"
-                ? "The terminal client is driving the work."
-                : state.watching.heldBy === "gui"
-                  ? "The desktop app is driving the work."
-                  : "Another Poundlock Dispatch client is driving the work."}{" "}
-              Everything here is live; only starting new work is held.
-            </span>
-          </div>
-        ) : null}
-        {error || info || state.notice ? (
-          <div
-            className={`notice ${error || (!info && state.notice?.kind === "error") ? "error" : ""}`}
-            role={error ? "alert" : "status"}
-          >
-            <span>{error || info || state.notice?.text}</span>
-            {error || info ? (
-              <button
-                type="button"
-                className="quiet small"
-                onClick={() => {
-                  setError(undefined);
-                  setInfo(undefined);
-                }}
-              >
-                Dismiss
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        {!selected ? (
-          <div className="empty">
-            <h2>Start with a project</h2>
-            <p>
-              Add a folder on this Mac or a Git repository. Work happens there; manager notes stay
-              in Poundlock Dispatch, not the repository.
-            </p>
-            <button type="button" className="primary" onClick={() => setShowNew(true)}>
-              Add project
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="conversation-shell">
-              <div
-                className="conversation"
-                ref={follow.ref}
-                role="log"
-                aria-label="Conversation with the Project Manager"
-                tabIndex={0}
-                onScroll={follow.onScroll}
-              >
-                {!selected.messages.length ? (
-                  <p className="hint conversation-empty">
-                    Ask the Project Manager a question, agree a small change, or describe work to
-                    plan.
-                  </p>
-                ) : null}
-                {conversationTimeline(selected.messages, state.liveWork, state.activity).map(
-                  (item, index) =>
+            <>
+              <div className="conversation-shell">
+                <div
+                  className="conversation"
+                  ref={follow.ref}
+                  role="log"
+                  aria-label="Conversation with the Project Manager"
+                  tabIndex={0}
+                  onScroll={follow.onScroll}
+                >
+                  {!selected.messages.length ? (
+                    <p className="hint conversation-empty">
+                      Ask the Project Manager a question, agree a small change, or describe work to
+                      plan.
+                    </p>
+                  ) : null}
+                  {conversationTimeline(
+                    selected.messages,
+                    state.liveWork,
+                    state.activity,
+                    density,
+                  ).map((item, index) =>
                     item.kind === "activity" ? (
                       <LiveWorkEvent
                         key={`activity:${index}:${item.entry.at}`}
                         entry={item.entry}
+                        hidden={item.hidden}
                       />
                     ) : (
                       <article
@@ -468,124 +496,138 @@ export function App() {
                             <Markdown text={item.message.text} />
                           )}
                         </div>
-                        <MessageToolTrace trace={item.message.toolTrace} />
+                        <MessageToolTrace
+                          trace={item.message.toolTrace}
+                          open={density === "verbose"}
+                        />
                       </article>
                     ),
-                )}
-                {state.managerDraft?.trim() ? (
-                  // Styled as the manager message it is about to become, minus
-                  // the timestamp — the turn has not produced one yet.
-                  <article className="msg manager draft">
-                    <header className="msg-head">
-                      <span className="who">{speaker("manager")}</span>
-                    </header>
-                    <div className="body">
-                      <Markdown text={state.managerDraft} />
-                    </div>
-                  </article>
+                  )}
+                  {state.managerDraft?.trim() ? (
+                    // Styled as the manager message it is about to become, minus
+                    // the timestamp — the turn has not produced one yet.
+                    <article className="msg manager draft">
+                      <header className="msg-head">
+                        <span className="who">{speaker("manager")}</span>
+                      </header>
+                      <div className="body">
+                        <Markdown text={state.managerDraft} />
+                      </div>
+                    </article>
+                  ) : null}
+                  <PlanProposal state={state} selected={selected} />
+                  <LiveWorkLog activity={state.activity} place={currentTaskPlace(selected)} />
+                </div>
+                {follow.unseen ? (
+                  <button type="button" className="jump-to-latest" onClick={follow.jumpToLatest}>
+                    New activity ↓
+                  </button>
                 ) : null}
-                <PlanProposal state={state} selected={selected} />
-                <LiveWorkLog activity={state.activity} place={currentTaskPlace(selected)} />
               </div>
-              {follow.unseen ? (
-                <button type="button" className="jump-to-latest" onClick={follow.jumpToLatest}>
-                  New activity ↓
-                </button>
-              ) : null}
-            </div>
-            <AutopilotPanel state={state} selected={selected} run={run} />
-            {autopilotLive ? null : (
-              <DecisionDock state={state} selected={selected} run={run} onState={setState} />
-            )}
-            <form
-              className="composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const text = draft.trim();
-                if (!text || sendDisabledReason) return;
-                const target = {
-                  projectId: selected.project.id,
-                  workflowId: selected.project.workflowId,
-                };
-                const needsInput = Boolean(selected.project.needsInput);
-                void submitComposerDraft(text, {
-                  clear: () => setDraft(""),
-                  restore: (value) => setDraft((current) => (current.trim() ? current : value)),
-                  current: () => "",
-                  send: async (value) => {
-                    const sent = await run(() =>
-                      needsInput
-                        ? window.poundlockDispatch.replyInput(value, target)
-                        : window.poundlockDispatch.sendMessage(value, target),
-                    );
-                    if (sent === undefined) throw new Error("Message was not sent.");
-                  },
-                });
-              }}
-            >
-              <label htmlFor="composer-input" className="sr-only">
-                {selected.project.needsInput
-                  ? "Reply to the Project Manager"
-                  : "Message the Project Manager"}
-              </label>
-              <textarea
-                id="composer-input"
-                value={draft}
-                aria-describedby={sendDisabledReason ? "composer-reason" : undefined}
-                placeholder={
-                  selected.project.needsInput
-                    ? "Reply to the Project Manager’s question…"
-                    : "Ask the Project Manager, discuss an action, or describe work…"
-                }
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
-                  }
+              <AutopilotPanel state={state} selected={selected} run={run} />
+              {autopilotOwnsStatus(state.autopilot, statusView?.cause) ? null : (
+                <DecisionDock state={state} selected={selected} run={run} onState={setState} />
+              )}
+              <form
+                className="composer"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const text = draft.trim();
+                  if (!text || sendDisabledReason) return;
+                  const target = {
+                    projectId: selected.project.id,
+                    workflowId: selected.project.workflowId,
+                  };
+                  const toRun = autopilotTakesMessages(state.autopilot);
+                  const needsInput = !toRun && Boolean(selected.project.needsInput);
+                  void submitComposerDraft(text, {
+                    clear: () => setDraft(""),
+                    restore: (value) => setDraft((current) => (current.trim() ? current : value)),
+                    current: () => "",
+                    send: async (value) => {
+                      const sent = await run(() =>
+                        needsInput
+                          ? window.poundlockDispatch.replyInput(value, target)
+                          : window.poundlockDispatch.sendMessage(value, target),
+                      );
+                      if (sent === undefined) throw new Error("Message was not sent.");
+                    },
+                  });
                 }}
-              />
-              <div className="composer-bar">
-                <TrustChip
-                  mode={effectiveToolTrust(selected.project.policy.toolTrust, state.permissions)}
-                  busy={false}
-                  onChange={(mode) =>
-                    void run(() =>
-                      window.poundlockDispatch.updatePolicy(selected.project.id, {
-                        ...selected.project.policy,
-                        toolTrust: mode,
-                      }),
-                    )
+              >
+                <label htmlFor="composer-input" className="sr-only">
+                  {autopilotPhase && autopilotTakesMessages(state.autopilot)
+                    ? "Message Autopilot"
+                    : selected.project.needsInput
+                      ? "Reply to the Project Manager"
+                      : "Message the Project Manager"}
+                </label>
+                <textarea
+                  id="composer-input"
+                  value={draft}
+                  aria-describedby={sendDisabledReason ? "composer-reason" : undefined}
+                  placeholder={
+                    autopilotPhase && autopilotTakesMessages(state.autopilot)
+                      ? autopilotMessageHint(autopilotPhase)
+                      : selected.project.needsInput
+                        ? "Reply to the Project Manager’s question…"
+                        : "Ask the Project Manager, discuss an action, or describe work…"
                   }
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
                 />
-                <ReasoningChip
-                  state={state}
-                  project={selected.project}
-                  onChange={(choice) =>
-                    void run(() =>
-                      window.poundlockDispatch.setConversationReasoning(
-                        selected.project.id,
-                        choice,
-                      ),
-                    )
-                  }
-                />
-                <ComposerInfolets state={state} onCompact={compactConversation} />
-                <span className="composer-reason" id="composer-reason" aria-live="polite">
-                  {sendDisabledReason ?? ""}
-                </span>
-                <button
-                  className="primary"
-                  type="submit"
-                  disabled={Boolean(sendDisabledReason) || !draft.trim()}
-                >
-                  Send
-                </button>
-              </div>
-            </form>
-          </>
-        )}
-      </main>
+                <div className="composer-bar">
+                  <TrustChip
+                    mode={effectiveToolTrust(selected.project.policy.toolTrust, state.permissions)}
+                    busy={false}
+                    onChange={(mode) =>
+                      void run(() =>
+                        window.poundlockDispatch.updatePolicy(selected.project.id, {
+                          ...selected.project.policy,
+                          toolTrust: mode,
+                        }),
+                      )
+                    }
+                  />
+                  <ReasoningChip
+                    state={state}
+                    project={selected.project}
+                    onChange={(choice) =>
+                      void run(() =>
+                        window.poundlockDispatch.setConversationReasoning(
+                          selected.project.id,
+                          choice,
+                        ),
+                      )
+                    }
+                  />
+                  <DensityChip density={density} onChange={setDensity} />
+                  <ComposerInfolets state={state} onCompact={compactConversation} />
+                  <span className="composer-reason" id="composer-reason" aria-live="polite">
+                    {sendDisabledReason ?? ""}
+                  </span>
+                  <button
+                    className="primary"
+                    type="submit"
+                    disabled={Boolean(sendDisabledReason) || !draft.trim()}
+                  >
+                    Send
+                  </button>
+                </div>
+              </form>
+            </>
+          )}
+        </main>
+      </PaneBoundary>
       {fit.rightDocked ? (
         <div {...layout.separatorProps("right", "Resize plan and tasks panel")} />
       ) : null}
@@ -596,19 +638,21 @@ export function App() {
           style={{ width: fit.right }}
         >
           {selected ? (
-            <Inspector
-              state={state}
-              selected={selected}
-              expanded={expandedTasks}
-              onToggleTask={(taskId, open) =>
-                setExpandedTasks((current) => {
-                  const next = new Set(current);
-                  if (open) next.add(taskId);
-                  else next.delete(taskId);
-                  return next;
-                })
-              }
-            />
+            <PaneBoundary name="The plan and tasks" resetKey={selected.project.id}>
+              <Inspector
+                state={state}
+                selected={selected}
+                expanded={expandedTasks}
+                onToggleTask={(taskId, open) =>
+                  setExpandedTasks((current) => {
+                    const next = new Set(current);
+                    if (open) next.add(taskId);
+                    else next.delete(taskId);
+                    return next;
+                  })
+                }
+              />
+            </PaneBoundary>
           ) : (
             <p className="hint">Open a project to see its plan and tasks.</p>
           )}
@@ -621,7 +665,6 @@ export function App() {
       {history ? <HistoryDialog history={history} onClose={() => setHistory(undefined)} /> : null}
       {showNew ? (
         <NewProjectModal
-          probe={state.probe}
           integrations={state.integrations}
           onClose={() => setShowNew(false)}
           onCreated={(next) => {
@@ -698,12 +741,10 @@ function HistoryDialog({ history, onClose }: { history: RunHistoryRecord[]; onCl
 }
 
 function NewProjectModal({
-  probe,
   integrations,
   onClose,
   onCreated,
 }: {
-  probe: AppStateView["probe"];
   integrations: IntegrationsPublic;
   onClose: () => void;
   onCreated: (state: AppStateView) => void;

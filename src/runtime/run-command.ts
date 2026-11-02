@@ -279,7 +279,6 @@ export async function resolveCommand(
     env.PATH ?? "",
   );
   const source = classifyExecutable(
-    executable,
     invocationPath,
     extraPath,
     commandRoots,
@@ -465,7 +464,6 @@ async function resolveExecutable(
 }
 
 function classifyExecutable(
-  executable: string,
   invocationPath: string,
   extraPath: string[],
   /** The attached project and every folder granted beside it. */
@@ -611,13 +609,3 @@ export async function executeResolvedCommand(
     if (signal.aborted) abort();
   });
 }
-
-export function displayCommand(command: Pick<ResolvedCommand, "program" | "arguments" | "cwd">): {
-  program: string;
-  arguments: string[];
-  cwd: string;
-} {
-  return { program: command.program, arguments: command.arguments, cwd: command.cwd };
-}
-
-export { dirname };

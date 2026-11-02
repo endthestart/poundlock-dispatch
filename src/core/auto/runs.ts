@@ -11,7 +11,7 @@ import {
   autoProgressView,
   OUTCOME_LABELS,
 } from "@shared/auto-run";
-import { writeJsonAtomic } from "../atomic-write";
+import { writeJsonDurable } from "../atomic-write";
 import { oneLine } from "./cases";
 import {
   type ExportedPatch,
@@ -35,7 +35,7 @@ import { vmFirewallCommand } from "./vm-firewall";
  *   auto/locks/<project>.lock      held while a run of that project is unfinished
  *   auto/runs/<run>/run.json       what was asked for (no token)
  *   auto/runs/<run>/events.jsonl   the ledger, the source of truth
- *   auto/runs/<run>/status.json    a heartbeat and the derived state
+ *   auto/runs/<run>/status.json    the derived state and the runner's activity
  *   auto/runs/<run>/runner.pid     the runner holding the run
  *   auto/runs/<run>/runner.log     what the runner did
  *   auto/runs/<run>/work           the run's worktree, on branch auto/<run>
@@ -189,7 +189,7 @@ export async function readRunFile(runDir: string): Promise<AutoRunFile> {
 }
 
 export async function writeRunFile(runDir: string, run: AutoRunFile): Promise<void> {
-  await writeJsonAtomic(join(runDir, "run.json"), run);
+  await writeJsonDurable(join(runDir, "run.json"), run);
 }
 
 export const runRepo = (run: AutoRunFile) => new RunRepo(run.worktree, run.gitDir);
@@ -338,7 +338,6 @@ export async function summarize(runDir: string): Promise<RunSummary> {
   };
 }
 
-/** The runs of one project folder, newest first. */
 /** A project folder's run folders, newest first by when each was created. */
 async function runDirsFor(paths: AutoPaths, source: string): Promise<string[]> {
   const key = projectKey(await realpath(source).catch(() => source));
@@ -373,11 +372,11 @@ export async function resolveRun(
     const byId = paths.runDir(ref.run);
     for (const candidate of [byId, resolve(ref.run)])
       if (existsSync(join(candidate, "run.json"))) return candidate;
-    throw new Error(`There is no auto run ${ref.run}.`);
+    throw new Error(`There is no Autopilot run ${ref.run}.`);
   }
   if (!ref.dir) throw new Error("Name a run, or the project folder with --dir.");
   const newest = (await runsForSource(paths, ref.dir))[0];
-  if (!newest) throw new Error(`There is no auto run for ${resolve(ref.dir)} yet.`);
+  if (!newest) throw new Error(`There is no Autopilot run for ${resolve(ref.dir)} yet.`);
   return newest.runDir;
 }
 
@@ -518,7 +517,7 @@ export function exportHeader(
     .filter((c) => c.stage !== "accepted" && c.checkpoints.length)
     .map((c) => c.id);
   return [
-    `Dispatch auto run ${run.runId}: verified, not reviewed.`,
+    `Dispatch Autopilot run ${run.runId}: verified, not reviewed.`,
     "Each case passed the project's checks in the run's container. Nobody has reviewed this code.",
     "",
     `Base: ${run.baseCommit}`,
@@ -535,6 +534,17 @@ export function exportHeader(
     "Review it, then apply it to the base: git apply --index <this file>",
     `Or fetch the branch: git fetch ${run.mirror} ${run.branch}:${run.branch}`,
   ];
+}
+
+/**
+ * Remove a run's worktree, with whatever setup installed in it. Its verified
+ * work stays on the mirror's branch, so it can still be merged or exported.
+ */
+export async function removeRunWorktree(run: AutoRunFile): Promise<boolean> {
+  if (!run.worktree || !existsSync(run.worktree)) return false;
+  await rm(run.worktree, { recursive: true, force: true });
+  await mirrorRepo(run).run(["worktree", "prune"]);
+  return true;
 }
 
 export interface ExportedRun extends ExportedPatch {
@@ -576,10 +586,7 @@ export async function exportRun(runDir: string, out?: string): Promise<ExportedR
     exportHeader(run, state, head, runsHere),
   );
   const finished = state.outcome === "objective_met" && !(await runnerAlive(runDir));
-  if (finished && existsSync(run.worktree)) {
-    await rm(run.worktree, { recursive: true, force: true });
-    await mirrorRepo(run).run(["worktree", "prune"]);
-  }
+  if (finished) await removeRunWorktree(run);
   return {
     ...exported,
     warnings: warning ? [warning] : [],

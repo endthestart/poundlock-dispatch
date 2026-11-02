@@ -32,6 +32,19 @@ it("tests that the configured model is actually listed", async () => {
     model: "local-manager",
     reportedContextTokens: 32768,
   });
+  // The test comes before the limits are known: it takes the server's, and saving checks them.
+  const unknownLimits = { url: local.url, model: local.model, token: "" };
+  await expect(probeLocalManager(unknownLimits, fetchImpl as typeof fetch)).resolves.toMatchObject({
+    reportedContextTokens: 32768,
+    reportedMaxOutputTokens: 2048,
+  });
+  await expect(
+    probeLocalManager(
+      { ...unknownLimits, url: "https://models.example.com" },
+      fetchImpl as typeof fetch,
+    ),
+  ).rejects.toThrow(/this computer/i);
+  expect(() => normalizeLocalManager({ ...local, contextTokens: 0 })).toThrow(/4,096/);
 });
 
 it("keeps the local token out of public connection state", async () => {

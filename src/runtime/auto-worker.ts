@@ -302,7 +302,6 @@ export function autoAttemptHooks(
   };
 }
 
-/** Poundlock or the model could not serve the attempt: retried later, never a repair. */
 /**
  * A failure that passes if the run waits: Poundlock or the model unreachable or
  * busy, or a provider asking for a retry later (OpenRouter's in-flight credit

@@ -34,7 +34,7 @@ export type AddressClass = "public" | "private" | "loopback" | "refused";
 
 /**
  * Where an address points. "private" is the owner's networks: RFC 1918, CGNAT
- * (Tailscale), link-local and unique-local IPv6. "loopback" is this Mac's own
+ * (CGNAT), link-local and unique-local IPv6. "loopback" is this Mac's own
  * services. Multicast, broadcast and reserved addresses are refused either way.
  */
 export function classifyAddress(address: string): AddressClass {

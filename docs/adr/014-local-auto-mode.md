@@ -1,8 +1,10 @@
 # ADR 014 — Local auto mode: an unattended runner for an approved plan
 
-Status: Accepted for B1, 2026-09-29. Detached supervision only; checkpoint
-supervision waits for later research. Written from the draft specification and a
-comparison with a prompt-loop tool on long unattended runs (27 Sep 2026).
+Status: Accepted for B1, 2026-09-29. Superseded in part by
+[ADR 016](016-autopilot-goal-engine.md), which replaces B2 and B3; B1 stays the base.
+Detached supervision only; checkpoint supervision waits for later research. Written
+from the draft specification and a comparison with a prompt-loop tool on long
+unattended runs (27 Sep 2026).
 
 ## Decision
 

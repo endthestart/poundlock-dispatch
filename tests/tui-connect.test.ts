@@ -355,6 +355,29 @@ describe("the /connect command in the terminal client", () => {
     expect(app.editorForTest().getText()).not.toContain(TOKEN);
   });
 
+  it("goes on to choose the Manager and the Worker when they are not set, as the app's setup does", async () => {
+    const { fixture, app, overlays, type } = await appFixture();
+    const connection = await fixture.store.getConnection();
+    await fixture.store.saveConnection({ ...connection, roles: {} });
+    vi.stubGlobal("fetch", controllerFetch(TOKEN));
+    const done = app.submitForTest("/connect");
+    const answer = async (count: number, keys: string) => {
+      await vi.waitFor(() => expect(overlays).toHaveLength(count));
+      if (keys === "token") {
+        type(TOKEN);
+        overlays.at(-1)!.component.handleInput("\r");
+      } else overlays.at(-1)!.component.handleInput(keys);
+    };
+    await answer(1, "\r");
+    await answer(2, "token");
+    await vi.waitFor(() => expect(overlays).toHaveLength(3));
+    expect(overlays[2].component.render(80).join("\n")).toContain("Model for the manager role");
+    // Escape leaves the rest to /role, as closing the app's setup does.
+    overlays[2].component.handleInput("\u001b");
+    await done;
+    expect(overlays).toHaveLength(3);
+  });
+
   it("refuses a token typed on the command line, and keeps that line out of the history", async () => {
     const { fixture, host, app } = await appFixture();
     await app.submitForTest(`/connect ${URL_} ${TOKEN}`);

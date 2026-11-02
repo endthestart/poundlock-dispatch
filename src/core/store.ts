@@ -20,7 +20,7 @@ import {
   savedUiPreferences,
   type UiPreferences,
 } from "@shared/ui-preferences";
-import { writeFileAtomic, writeJsonAtomic } from "./atomic-write.js";
+import { writeFileAtomic, writeJsonAtomic, writeJsonDurable } from "./atomic-write.js";
 import { withoutJobBindings } from "./durable-retirement.js";
 import { type DataLayout, layoutFor, projectFiles } from "./paths.js";
 
@@ -133,7 +133,7 @@ export class FileStore {
   async saveConnection(settings: ConnectionSettings): Promise<void> {
     const existing = await this.getConnection();
     const changed = settings.url.trim().replace(/\/+$/, "") !== existing.url.replace(/\/+$/, "");
-    await writeJsonAtomic(this.layout.config.connection, {
+    await writeJsonDurable(this.layout.config.connection, {
       url: settings.url.trim(),
       roles: settings.roles ?? (changed ? {} : existing.roles),
       profiles: settings.profiles ?? (changed ? {} : existing.profiles),
@@ -160,7 +160,7 @@ export class FileStore {
       example: EXAMPLE_CONTROLLER_URL,
       note: "example is documentation only and is not used unless you save it as url",
     });
-    await writeJsonAtomic(
+    await writeJsonDurable(
       this.layout.config.secret,
       {
         token: settings.token.trim() ? settings.token : changed ? "" : existing.token,
@@ -181,12 +181,12 @@ export class FileStore {
     const next = { ...(existing ?? { url: "", roles: {} }) };
     if (url) next.webSearch = { url };
     else delete next.webSearch;
-    await writeJsonAtomic(this.layout.config.connection, next);
+    await writeJsonDurable(this.layout.config.connection, next);
   }
 
   async clearConnection(): Promise<void> {
-    await writeJsonAtomic(this.layout.config.connection, { url: "", roles: {} });
-    await writeJsonAtomic(this.layout.config.secret, { token: "", localManagerToken: "" });
+    await writeJsonDurable(this.layout.config.connection, { url: "", roles: {} });
+    await writeJsonDurable(this.layout.config.secret, { token: "", localManagerToken: "" });
   }
 
   async getIntegrationsPublic(): Promise<IntegrationsPublic> {
@@ -264,8 +264,8 @@ export class FileStore {
 
   async savePermissions(settings: PermissionSettings): Promise<void> {
     const { grants, ...defaults } = normalizePermissions(settings);
-    await writeJsonAtomic(this.layout.config.defaults, defaults);
-    await writeJsonAtomic(this.layout.permissions, grants ? { grants } : {});
+    await writeJsonDurable(this.layout.config.defaults, defaults);
+    await writeJsonDurable(this.layout.permissions, grants ? { grants } : {});
   }
 
   async getUiPreferences(): Promise<UiPreferences> {
@@ -294,16 +294,14 @@ export class FileStore {
     const secret = await readIntegrationsSecret(this.layout.config.integrationsSecret);
     delete publicPart[kind];
     delete secret[kind];
-    await writeJsonAtomic(this.layout.config.integrations, publicPart);
-    await writeJsonAtomic(this.layout.config.integrationsSecret, secret, 0o600);
+    await writeJsonDurable(this.layout.config.integrations, publicPart);
+    await writeJsonDurable(this.layout.config.integrationsSecret, secret, 0o600);
   }
 
   /**
-   * Each project's own `project.json` is the record. `projects.json` held a
-   * copy of every project and each save rewrote it whole, so two processes
-   * sharing a data root (the app, the terminal, an Autopilot runner) could
-   * undo each other's saves of different projects. It is still written, for
-   * an older client, and never read.
+   * Each project's own `project.json` is the record, so two processes sharing
+   * a data root (the app, the terminal, an Autopilot runner) never undo each
+   * other's saves of different projects.
    */
   async listProjects(): Promise<ProjectRecord[]> {
     const entries = await readdir(this.layout.projectsDir, { withFileTypes: true }).catch(() => []);
@@ -333,7 +331,6 @@ export class FileStore {
       const files = projectFiles(this.layout.root, project.id);
       await mkdir(files.dir, { recursive: true, mode: 0o700 });
       await writeJsonAtomic(files.record, project);
-      await this.writeLegacyIndex();
     });
   }
 
@@ -341,14 +338,8 @@ export class FileStore {
     return this.serial("index", async () => {
       const existing = await this.getProject(id);
       await rm(projectFiles(this.layout.root, id).record, { force: true });
-      await this.writeLegacyIndex();
       return existing;
     });
-  }
-
-  /** `projects.json` for a client from before per-project records were read. */
-  private async writeLegacyIndex(): Promise<void> {
-    await writeJsonAtomic(this.layout.projectsIndex, await this.listProjects());
   }
 
   async archiveCurrentRun(
@@ -508,8 +499,8 @@ async function saveForgeAccount(
         : "Paste a Gitea access token.",
     );
   }
-  await writeJsonAtomic(store.layout.config.integrations, publicPart);
-  await writeJsonAtomic(store.layout.config.integrationsSecret, secret, 0o600);
+  await writeJsonDurable(store.layout.config.integrations, publicPart);
+  await writeJsonDurable(store.layout.config.integrationsSecret, secret, 0o600);
 }
 
 export async function readJsonIfExists<T>(file: string): Promise<T | undefined> {

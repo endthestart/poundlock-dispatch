@@ -16,7 +16,7 @@ import { closeSync, openSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { resumeRun, stopRun } from "@core/auto/control";
+import { cleanupCandidates, dropRun, messageRun, resumeRun, stopRun } from "@core/auto/control";
 import { AutoLedger } from "@core/auto/ledger";
 import {
   type AutoPaths,
@@ -29,6 +29,7 @@ import {
   statusLines,
 } from "@core/auto/runs";
 import { type AutoPlanFile, type AutoStartDeps, startAutoRun } from "@core/auto/start";
+import { autoDockerContext } from "@core/data-root";
 import {
   PLANNER_EVAL_HEADER,
   type PlannerEvalFixture,
@@ -38,7 +39,11 @@ import type { FileStore } from "@core/store";
 import { type AutoRunnerDeps, runAutoRunner } from "@runtime/auto-runner";
 import { runPlannerEval } from "@runtime/planner-eval";
 import { OUTCOME_LABELS } from "@shared/auto-run";
+import { diskSize } from "@shared/disk-size";
 import type { ConnectionSettings, ProjectRecord } from "@shared/types";
+import { runCardReader } from "./auto-card.js";
+import { runDetailLines } from "./auto-details.js";
+import { mergeCommand, reportPath } from "./auto-merge.js";
 import { displaySafe } from "./jobs.js";
 
 export const AUTO_USAGE = `Usage: dispatch autopilot <command> [run] [options]
@@ -53,8 +58,18 @@ Commands:
   status [run]    Show a run's progress.
   watch [run]     Follow a run; Ctrl+C leaves it running.
   stop [run]      Stop after the current case; --now stops at once (the attempt is saved).
+  message [run] --text <words>
+                  Tell a run something: the worker on the current case hears it now,
+                  and later cases and the Planner's next review read it.
   resume [run]    Start the runner again for a stopped or interrupted run.
   export [run]    Write the run's verified work as a patch that applies to its base.
+  merge [run]     Say what merging the run's verified work into the folder brings;
+                  --yes fast-forwards the folder to it.
+  report [run]    Where an ended run's report is.
+  drop [run]      Drop an ended run: its working copy goes for good, and it cannot
+                  be resumed. Its verified work can still be exported or merged.
+  clean           List ended runs whose working copies can go, biggest first;
+                  --all drops every one listed.
   list            The folder's runs, newest first.
   eval-planner <fixture.json> --profile <model> [--out <file>]
                   Run one Planner call from an evaluation fixture and score it
@@ -72,9 +87,17 @@ start options:
                                 (default: the plan's checks).
   --prepare <command>           Setup run once before the base check; repeatable.
   --allow-dependency-downloads  Give setup the network, for package registries.
-  --docker-context <name>       The Docker context (default colima-dispatch-auto). Its VM
+  --docker-context <name>       The Docker context (default $POUNDLOCK_DISPATCH_DOCKER_CONTEXT,
+                                else colima-dispatch-auto). Its VM
                                 must mount only Dispatch's auto folder; see ADR 014.
   --allow-home-in-vm            Run even though the VM can see your home folder.
+  --allow-planner <destination> Let a Planner outside your network read code excerpts
+                                (the destination its error names).
+  --planner-cap <usd>           That Planner's spend cap for the run (default $5).
+  --checkpoint <notify|wait>    For a plan with milestones: keep going after each one
+                                (notify, the default) or stop until you resume (wait).
+  --accept-already-met          Accept a task whose work is already in the code
+                                (experimental: the milestone's next review judges it).
   --hours <n>                   Soft wall-clock limit (default 24).
   --case-minutes <n>            Time for each case (default 90).
   --max-cases <n>               Cases started (default 40).
@@ -85,6 +108,8 @@ Other options:
   --dir <path>                  The folder whose newest run is meant.
   --now                         stop: stop at once.
   --out <file>                  export: where to write the patch.
+  --all                         clean: drop every run listed.
+  --yes                         merge: fast-forward the folder.
 
 Exit codes: 0 done, 1 failed, 2 wrong usage.
 `;
@@ -97,7 +122,11 @@ export type AutoCommand =
   | { command: "list"; dir: string }
   | { command: "status" | "watch" | "resume"; run?: string; dir?: string }
   | { command: "stop"; run?: string; dir?: string; now: boolean }
+  | { command: "message"; run?: string; dir?: string; text: string }
   | { command: "export"; run?: string; dir?: string; out?: string }
+  | { command: "drop" | "report"; run?: string; dir?: string }
+  | { command: "merge"; run?: string; dir?: string; yes: boolean }
+  | { command: "clean"; all: boolean }
   | { command: "eval-planner"; fixture: string; profile: string; out?: string }
   | {
       command: "start";
@@ -110,6 +139,10 @@ export type AutoCommand =
       allowDependencyDownloads: boolean;
       dockerContext?: string;
       allowHomeInVm: boolean;
+      allowPlanner?: string;
+      plannerCapUsd?: number;
+      checkpoint?: "notify" | "wait";
+      acceptAlreadyMet: boolean;
       limits: { hours?: number; caseMinutes?: number; maxCases?: number; maxTokens?: number };
       wait: boolean;
     };
@@ -141,6 +174,10 @@ export function parseAutoArgs(argv: string[]): AutoCommand {
         "allow-dependency-downloads": { type: "boolean" },
         "docker-context": { type: "string" },
         "allow-home-in-vm": { type: "boolean" },
+        "allow-planner": { type: "string" },
+        "planner-cap": { type: "string" },
+        checkpoint: { type: "string" },
+        "accept-already-met": { type: "boolean" },
         hours: { type: "string" },
         "case-minutes": { type: "string" },
         "max-cases": { type: "string" },
@@ -148,6 +185,9 @@ export function parseAutoArgs(argv: string[]): AutoCommand {
         "no-wait": { type: "boolean" },
         now: { type: "boolean" },
         out: { type: "string" },
+        all: { type: "boolean" },
+        text: { type: "string" },
+        yes: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
     });
@@ -174,8 +214,21 @@ export function parseAutoArgs(argv: string[]): AutoCommand {
       return { command, run, dir };
     case "stop":
       return { command, run, dir, now: Boolean(values.now) };
+    case "message": {
+      const words = text("text")?.trim();
+      if (!words) throw new AutoUsageError("auto message needs --text <words>.");
+      return { command, run, dir, text: words };
+    }
     case "export":
       return { command, run, dir, out: text("out") };
+    case "drop":
+    case "report":
+      return { command, run, dir };
+    case "merge":
+      return { command, run, dir, yes: Boolean(values.yes) };
+    case "clean":
+      if (run) throw new AutoUsageError("auto clean takes no run: use auto drop <run> for one.");
+      return { command, all: Boolean(values.all) };
     case "eval-planner": {
       const profile = text("profile");
       if (!run || !profile)
@@ -192,6 +245,9 @@ export function parseAutoArgs(argv: string[]): AutoCommand {
         );
       if ([...list("check"), ...list("prepare")].some((entry) => !entry.trim()))
         throw new AutoUsageError("--check and --prepare cannot be empty.");
+      const checkpoint = text("checkpoint");
+      if (checkpoint !== undefined && checkpoint !== "notify" && checkpoint !== "wait")
+        throw new AutoUsageError("--checkpoint is notify or wait.");
       return {
         command: "start",
         dir,
@@ -203,6 +259,10 @@ export function parseAutoArgs(argv: string[]): AutoCommand {
         allowDependencyDownloads: Boolean(values["allow-dependency-downloads"]),
         dockerContext: text("docker-context"),
         allowHomeInVm: Boolean(values["allow-home-in-vm"]),
+        allowPlanner: text("allow-planner"),
+        plannerCapUsd: positive("--planner-cap", text("planner-cap"), false),
+        ...(checkpoint ? { checkpoint } : {}),
+        acceptAlreadyMet: Boolean(values["accept-already-met"]),
         limits: {
           hours: positive("--hours", text("hours"), false),
           caseMinutes: positive("--case-minutes", text("case-minutes")),
@@ -238,10 +298,10 @@ export interface AutoCliDeps {
   home?: string;
 }
 
-/** Start `auto run <runDir>` as a detached process that outlives this one, logging to the run. */
+/** Start `autopilot run <runDir>` as a detached process that outlives this one, logging to the run. */
 export function spawnDetachedRunner(entry: string, runDir: string): void {
   const log = openSync(join(runDir, "runner.log"), "a", 0o600);
-  const child = spawn(process.execPath, [entry, "auto", "run", runDir], {
+  const child = spawn(process.execPath, [entry, "autopilot", "run", runDir], {
     detached: true,
     stdio: ["ignore", log, log],
     env: process.env,
@@ -294,6 +354,12 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
   }
   const spawnRunner =
     deps.spawnRunner ?? ((runDir: string) => spawnDetachedRunner(deps.entry, runDir));
+  // The newest run's card and its details; an older run has only its progress lines.
+  const card = runCardReader(deps);
+  const progress = async (runDir: string) => {
+    const read = await card(runDir);
+    return read ? [...read.card, "", ...runDetailLines(read.view)] : statusLines(runDir);
+  };
   try {
     switch (command.command) {
       case "run": {
@@ -315,12 +381,20 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
             plan: command.plan ? await readPlan(command.plan) : undefined,
             profile: command.profile,
             image: command.image,
-            dockerContext: command.dockerContext,
+            dockerContext: command.dockerContext ?? autoDockerContext(),
             allowHomeInVm: command.allowHomeInVm,
             checks: command.checks,
             prepare: command.prepare,
             allowDependencyDownloads: command.allowDependencyDownloads,
+            ...(command.acceptAlreadyMet ? { acceptAlreadyMet: true } : {}),
             limits: command.limits,
+            goal: {
+              ...(command.checkpoint ? { checkpoint: command.checkpoint } : {}),
+              ...(command.allowPlanner ? { allowPlannerDestination: command.allowPlanner } : {}),
+              ...(command.plannerCapUsd !== undefined
+                ? { plannerSpendCapUsd: command.plannerCapUsd }
+                : {}),
+            },
           },
           {
             paths: deps.paths,
@@ -393,7 +467,7 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
       }
       case "status": {
         const runDir = await resolveRun(deps.paths, command);
-        for (const line of await statusLines(runDir)) say(line);
+        for (const line of await progress(runDir)) say(line);
         return 0;
       }
       case "watch": {
@@ -405,7 +479,7 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
         try {
           let shown = "";
           for (;;) {
-            const lines = await statusLines(runDir);
+            const lines = await progress(runDir);
             const text = lines.join("\n");
             if (text !== shown) {
               say(`${shown ? "\n" : ""}${text}`);
@@ -424,6 +498,18 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
         } finally {
           stopListening();
         }
+      }
+      case "message": {
+        const runDir = await resolveRun(deps.paths, command);
+        const result = await messageRun(runDir, command.text);
+        say(
+          result === "already_ended"
+            ? "The run is finished; nothing was sent."
+            : result === "sent"
+              ? "Sent. The worker on the current case hears it now; later cases and the Planner's next review read it."
+              : "Saved. The runner is not running; the run takes it when it resumes.",
+        );
+        return result === "already_ended" ? 1 : 0;
       }
       case "stop": {
         const runDir = await resolveRun(deps.paths, command);
@@ -459,6 +545,10 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
           say("Every case of this run is verified; there is nothing to resume.");
           return 0;
         }
+        if (result === "dropped") {
+          warn("This run was dropped, so it cannot be resumed. Export or merge its verified work.");
+          return 1;
+        }
         const run = await readRunFile(runDir);
         say(`Resuming ${run.runId}. Follow it with: auto watch ${run.runId}`);
         return 0;
@@ -489,6 +579,48 @@ export async function runAuto(argv: string[], deps: AutoCliDeps): Promise<number
         say(plannerEvalRow(result));
         say(`Wrote ${out}.`);
         return result.scores.usable ? 0 : 1;
+      }
+      case "merge": {
+        const runDir = await resolveRun(deps.paths, command);
+        for (const line of await mergeCommand(runDir, command.yes, { ...deps, spawnRunner }))
+          say(line);
+        return 0;
+      }
+      case "report": {
+        say(reportPath(await resolveRun(deps.paths, command)));
+        return 0;
+      }
+      case "drop": {
+        const runDir = await resolveRun(deps.paths, command);
+        await dropRun(deps.paths, runDir, { docker: deps.docker, env: deps.dockerEnv });
+        say(
+          `Dropped ${(await readRunFile(runDir)).runId}: its working copy is removed. Its verified work can still be exported or merged.`,
+        );
+        return 0;
+      }
+      case "clean": {
+        const items = await cleanupCandidates(deps.paths);
+        if (!items.length) {
+          say("No ended run has a working copy left.");
+          return 0;
+        }
+        for (const item of items)
+          say(
+            `${item.bytes === undefined ? "size unknown" : diskSize(item.bytes)}  ${item.runId}  ${item.ended}  ${item.source}`,
+          );
+        if (!command.all) {
+          say("Drop one with: auto drop <run>. Drop every one listed with: auto clean --all");
+          return 0;
+        }
+        for (const item of items)
+          await dropRun(deps.paths, deps.paths.runDir(item.runId), {
+            docker: deps.docker,
+            env: deps.dockerEnv,
+          });
+        say(
+          `Dropped ${items.length} ${items.length === 1 ? "run" : "runs"} and their working copies.`,
+        );
+        return 0;
       }
       case "export": {
         const runDir = await resolveRun(deps.paths, command);

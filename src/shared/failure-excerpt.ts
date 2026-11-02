@@ -16,7 +16,7 @@ export function failureExcerpt(output: string, limit = 1_200): string {
 
 /** A runner saying it ran nothing. */
 const ZERO_TESTS =
-  /Test run with 0 tests|Executed 0 tests|\bno tests ran\b|collected 0 items|No tests found|^Ran 0 tests|^# tests 0$|^running 0 tests$/m;
+  /Test run with 0 tests|Executed 0 tests|\bno tests ran\b|\bFound 0 test\(s\)|collected 0 items|No tests found|^Ran 0 tests|^# tests 0$|^running 0 tests$/im;
 /** A runner saying it ran something. */
 const SOME_TESTS =
   /Test run with [1-9]|Executed [1-9]|collected [1-9]|^Ran [1-9]|^# tests [1-9]|^running [1-9]\d* tests?$|\b[1-9]\d* passed\b/m;

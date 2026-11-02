@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createProjectFromFiles, ProjectOrchestrator } from "@core/orchestration";
+import { ProjectOrchestrator } from "@core/orchestration";
 import { PoundlockClient } from "@core/poundlock";
+import { createFolderProject } from "@core/projects";
 import { ScriptedManager } from "@core/scripted-manager";
 import { FileStore } from "@core/store";
 import { hostCommandPort } from "@runtime/host-command";
@@ -48,23 +49,9 @@ describe("live Dispatch use cases (Poundlock backend)", () => {
           },
         },
       });
-      const project = await createProjectFromFiles({
-        store,
-        name: "u1-live",
-        files: [{ path: "README.md", content: Buffer.from("u1\n"), executable: false }],
-        source: {
-          kind: "local_folder",
-          originalPath: dataRoot(store),
-          capturedAt: new Date().toISOString(),
-          snapshotSha256: "u1",
-          baseRevision: "",
-          includedFiles: 1,
-          includedBytes: 3,
-          excludedPatterns: [],
-          includedUncommitted: true,
-          originalFingerprint: "u1",
-        },
-      });
+      const folder = await tempDir("dispatch-live-u1-");
+      await writeFile(join(folder, "README.md"), "u1\n");
+      const project = await createFolderProject({ store, folder, name: "u1-live" });
       await orchestrator.sendMessage(project.id, "What models are advertised? Do not plan.");
       expect(listed).toBeGreaterThan(0);
       expect(await store.getTasks(project.id)).toEqual([]);
@@ -127,13 +114,11 @@ describe("live Dispatch use cases (Poundlock backend)", () => {
       });
       const { createPiWorker } = await import("@runtime/pi-worker");
       const { ApprovalBroker } = await import("@core/approval-broker");
-      const { createFolderProject } = await import("@core/projects");
       const project = await createFolderProject({
         store,
         folder,
         policy: { toolTrust: "full" },
       });
-      const command = "node --test";
       const orchestrator = new ProjectOrchestrator({
         hostCommands: hostCommandPort,
         store,
@@ -205,7 +190,3 @@ describe("live Dispatch use cases (Poundlock backend)", () => {
     15 * 60 * 1000,
   );
 });
-
-function dataRoot(store: FileStore): string {
-  return store.layout.root;
-}

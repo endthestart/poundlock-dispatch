@@ -1,4 +1,4 @@
-import type { ConnectionProbe, InteractiveModel } from "./types";
+import type { ConnectionProbe, InteractiveModel, ProjectRecord } from "./types";
 
 export const EXECUTION_ROLES = [
   "snippet",
@@ -6,6 +6,7 @@ export const EXECUTION_ROLES = [
   "manager",
   "escalation",
   "verifier",
+  "fallback",
 ] as const;
 
 export type ExecutionRole = (typeof EXECUTION_ROLES)[number];
@@ -17,8 +18,6 @@ export interface RoleBinding {
   source: "interactive";
   /** Last operator-approved route. Live catalog revisions are compared against this, not stored as a new binding. */
   lastApprovedRoutingRevision?: string;
-  /** @deprecated Prefer lastApprovedRoutingRevision. Kept for saved role maps. */
-  routingRevision?: string;
   /** Exact destination approved when this role was saved. */
   approvedDataDestination?: import("./types").DataDestination;
   /** This role's reasoning default for this profile. Absent: Model default (an external manager uses `none` when verified). */
@@ -64,6 +63,12 @@ export const ROLE_DEFINITIONS: RoleDefinition[] = [
     label: "Verifier",
     required: false,
     hint: "Reviews new plans and checks each round's accepted work against your requirements, read-only. Called a few times per round, so your strongest model is affordable here. Unset: the Worker does it.",
+  },
+  {
+    id: "fallback",
+    label: "Local fallback",
+    required: false,
+    hint: "A model on your own machines that takes over, once, a cloud Manager, Planner, Verifier or Worker its provider refuses for a spending limit, for the rest of that run or conversation. You are told when it happens. Unset: that work stops instead.",
   },
 ];
 
@@ -137,6 +142,19 @@ export function destinationLabel(value: CatalogProfile["dataDestination"]): stri
       : "Destination unknown";
 }
 
+/** Where a profile's prices come from, in words. */
+export function pricingSourceLabel(source: string): string {
+  return (
+    {
+      litellm_route: "gateway route price",
+      litellm_cost_map: "gateway cost map",
+      openrouter_catalog: "OpenRouter catalog",
+      local: "local",
+      operator: "set by the operator",
+    }[source] ?? source
+  );
+}
+
 export function endpointKindLabel(value: CatalogProfile["endpointKind"]): string {
   return value === "litellm"
     ? "Routed through LiteLLM"
@@ -155,8 +173,11 @@ export function profileRouteLabel(profile: CatalogProfile): string {
       : `${destination} · connection not reported`;
 }
 
-export function guessRoleMap(probe: Pick<ConnectionProbe, "interactiveModels">): RoleMap {
-  const catalog = catalogFromProbe(probe);
+export function guessRoleMap(
+  probe: Pick<ConnectionProbe, "interactiveModels"> & Partial<Pick<ConnectionProbe, "permissions">>,
+): RoleMap {
+  // A disabled profile is never suggested.
+  const catalog = catalogFromProbe(probe).filter((profile) => profile.status !== "disabled");
   const used = new Set<string>();
   const pick = (predicate: (profile: CatalogProfile) => boolean): CatalogProfile | undefined => {
     const found = catalog.find((profile) => !used.has(keyOf(profile)) && predicate(profile));
@@ -165,12 +186,12 @@ export function guessRoleMap(probe: Pick<ConnectionProbe, "interactiveModels">):
   };
   const bind = (profile: CatalogProfile | undefined): RoleBinding | undefined =>
     profile ? bindingForProfile(profile) : undefined;
+  const mayGoExternal = probe.permissions?.includes("external:invoke") ?? false;
 
   // Suggestions use published execution capabilities only, never host/model names.
   // The user confirms these bindings against the operator's qualification report.
-  const snippet = pick(
-    (profile) => profile.source === "interactive" && hasUse(profile, "completion"),
-  );
+  // The manager and worker choose first: autocomplete took a one-model setup's only
+  // chat model and left no manager (UX review, 30 Oct).
   const manager =
     pick(
       (profile) =>
@@ -178,12 +199,23 @@ export function guessRoleMap(probe: Pick<ConnectionProbe, "interactiveModels">):
         !interactiveUnavailableReason(profile) &&
         profile.dataDestination !== "external",
     ) ??
-    pick((profile) => profile.source === "interactive" && !interactiveUnavailableReason(profile));
+    (mayGoExternal
+      ? pick(
+          (profile) => profile.source === "interactive" && !interactiveUnavailableReason(profile),
+        )
+      : undefined);
+  // A worker on the manager's runtime slot would swap models with it every turn, and a
+  // worker never sends the project to a provider (ADR 016).
   const interactive = pick(
     (profile) =>
       profile.source === "interactive" &&
       !interactiveUnavailableReason(profile) &&
-      !hasUse(profile, "completion"),
+      !hasUse(profile, "completion") &&
+      profile.dataDestination !== "external" &&
+      !sameRuntimeSlot(profile, manager),
+  );
+  const snippet = pick(
+    (profile) => profile.source === "interactive" && hasUse(profile, "completion"),
   );
   const escalation = undefined;
 
@@ -238,10 +270,6 @@ function fromInteractive(model: InteractiveModel): CatalogProfile {
   };
 }
 
-function matches(profile: CatalogProfile, pattern: RegExp): boolean {
-  return [profile.id, profile.name, ...profile.aliases].some((value) => pattern.test(value));
-}
-
 function keyOf(profile: CatalogProfile): string {
   return `${profile.source}:${profile.id}`;
 }
@@ -273,7 +301,6 @@ export function hasUse(
   return profileUses(model).has(use);
 }
 
-/** One eligibility rule for selectors and interactive execution; not a quality rating. */
 /**
  * Whether two profiles compete for one exclusive runtime slot — one machine's
  * runtime, where only one model is loaded at a time. Moving work between two
@@ -300,6 +327,7 @@ export function sameRuntimeSlot(
   return first !== undefined && first === slot(b);
 }
 
+/** One eligibility rule for selectors and interactive execution; not a quality rating. */
 export function interactiveUnavailableReason(
   model: Pick<InteractiveModel, "workload_class" | "uses" | "context_tokens" | "max_output_tokens">,
 ): string | undefined {
@@ -318,10 +346,12 @@ export function roleUnavailableReason(
 ): string | undefined {
   if (role === "snippet")
     return hasUse(profile, "completion") ? undefined : "Not an autocomplete profile";
+  if (role === "fallback" && profile.dataDestination !== "operator_network")
+    return "Not on your own network: a fallback must not send work to a provider";
   return interactiveUnavailableReason(profile);
 }
 export function approvedRoutingRevision(binding: RoleBinding | undefined): string | undefined {
-  return binding?.lastApprovedRoutingRevision ?? binding?.routingRevision;
+  return binding?.lastApprovedRoutingRevision;
 }
 
 function profileIdentityMatches(
@@ -455,9 +485,7 @@ export function bindingForProfile(profile: CatalogProfile, previous?: RoleBindin
     profileId: profile.profileId ?? profile.id,
     profileName: profile.name,
     source: profile.source,
-    ...(lastApproved
-      ? { lastApprovedRoutingRevision: lastApproved, routingRevision: lastApproved }
-      : {}),
+    ...(lastApproved ? { lastApprovedRoutingRevision: lastApproved } : {}),
     ...(approvedDestination ? { approvedDataDestination: approvedDestination } : {}),
   };
 }
@@ -498,11 +526,13 @@ export function canonicalRoleMap(
 }
 
 /** Leads with what model this actually is; the profile name is the machine/route serving it. */
-export function profileDisplayName(
-  profile: Pick<CatalogProfile, "name" | "modelLabel" | "upstreamModel">,
-): string {
-  const identity = profile.modelLabel || profile.upstreamModel || undefined;
-  return identity ? `${identity} — ${profile.name}` : profile.name;
+/**
+ * One name per model: the operator's label, else the profile name. The server's
+ * own alias for the model (such as "active") means nothing to a person; the route
+ * description still shows what answers.
+ */
+export function profileDisplayName(profile: Pick<CatalogProfile, "name" | "modelLabel">): string {
+  return profile.modelLabel || profile.name;
 }
 
 /** A saved role binding Poundlock no longer advertises: prefer the saved name over a raw profile id. */
@@ -519,12 +549,15 @@ export function unavailableSelectionLabel(binding: {
 export const UNAVAILABLE_SELECTION_MESSAGE =
   "This profile was removed in Poundlock. Choose another model.";
 export function managerChoice(
-  project: Pick<import("./types").ProjectRecord, "policy" | "managerEscalation">,
+  project: Pick<
+    import("./types").ProjectRecord,
+    "policy" | "managerEscalation" | "managerFallback"
+  >,
   roles: RoleMap,
 ): {
   id: string;
   fallbackName: string;
-  origin: "default" | "project" | "escalation";
+  origin: "default" | "project" | "escalation" | "fallback";
 } {
   const grant = project.managerEscalation?.profile;
   if (grant)
@@ -532,6 +565,12 @@ export function managerChoice(
       id: grant.profileId,
       fallbackName: grant.profileName,
       origin: "escalation",
+    };
+  if (project.managerFallback)
+    return {
+      id: project.managerFallback.profileId,
+      fallbackName: project.managerFallback.profileName,
+      origin: "fallback",
     };
   if (project.policy.managerModel)
     return {
@@ -554,5 +593,25 @@ export function requireInteractiveLimits(
   return {
     contextTokens: model.context_tokens!,
     maxOutputTokens: model.max_output_tokens!,
+  };
+}
+
+/**
+ * The roles a project's workers run under: the app's, with the Worker role
+ * replaced by the project's own choice when it has one. The ladder's further
+ * rungs are unchanged.
+ */
+export function projectWorkerRoles(
+  roles: RoleMap,
+  policy: Pick<ProjectRecord["policy"], "workerModel">,
+): RoleMap {
+  if (!policy.workerModel || policy.workerModel === roles.interactive?.profileId) return roles;
+  return {
+    ...roles,
+    interactive: {
+      profileId: policy.workerModel,
+      profileName: policy.workerModel,
+      source: "interactive",
+    },
   };
 }

@@ -4,7 +4,7 @@
  * deterministic doubles (fake manager, worker and Poundlock) and are separate
  * from packaged UAT evidence.
  */
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApprovalBroker } from "@core/approval-broker";
 import { composerSendBlocked, submitComposerDraft } from "@shared/composer-guard";
@@ -18,12 +18,6 @@ import {
   settle,
   workflowFixture,
 } from "./support/workflow-fixture";
-
-const exists = (path: string) =>
-  access(path).then(
-    () => true,
-    () => false,
-  );
 
 async function undecidedReviewRun() {
   const f = await workflowFixture();
@@ -183,7 +177,7 @@ describe("regression floor", () => {
     expect(f.backend.submits).toBe(0);
     expect(kinds).not.toContain("durable");
     const project = await f.store.getProject(f.project.id);
-    expect(project?.source.kind === "local_folder" && project.source.snapshotSha256).toBe("");
+    expect(project?.source.kind).toBe("local_folder");
     expect(project?.budget.jobsSubmitted).toBe(0);
   });
 

@@ -2,8 +2,8 @@ import { access, chmod, mkdir, realpath, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { writeRootsFor } from "@core/access-roots";
 import {
+  attemptClock,
   INTERACTIVE_ATTEMPT_LIMIT_ERROR,
-  INTERACTIVE_ATTEMPT_MS,
   isAttemptTimeLimit,
 } from "@core/attempt-limit";
 import { runChecks } from "@core/exec/checks";
@@ -89,6 +89,10 @@ export async function runWorkerTurn<M extends { role: string }>(
 /** A reply that ran past the model's output limit. */
 export const OUTPUT_LIMIT = "The worker response was cut off at the output limit.";
 
+/** Why an investigation asks once: its sandbox already keeps every command read-only. */
+export const INVESTIGATION_APPROVAL =
+  "Approving also lets this investigation's other commands in this folder run without asking: its sandbox lets them neither change files nor use the network.";
+
 const CONTEXT_LIMIT =
   "context_limit: The worker's context window filled up before it could reply. Ask for less at once, for example one commit or a few files per investigation.";
 
@@ -137,10 +141,6 @@ async function refreshPolicy(ctx: WorkerContext) {
     ctx.trust = effectiveToolTrust(current.project.policy.toolTrust, current.permissions);
   }
   return current?.permissions;
-}
-
-function policyKey(ctx: WorkerContext, permissions: unknown) {
-  return JSON.stringify([ctx.project?.policy, ctx.trust, permissions]);
 }
 
 /**
@@ -204,6 +204,9 @@ export async function workerHostContext(
     return ctx.readOnly ? { ...guarded, writable: [] } : guarded;
   };
   const sandboxRequest = await sandboxFor();
+  // One approval covers an investigation's commands in the project: asked
+  // for each `node --version`, an interview waited an hour for its owner.
+  let investigationApproved = false;
   return {
     readOnly: ctx.readOnly,
     projectRoot,
@@ -228,6 +231,8 @@ export async function workerHostContext(
         return "allow";
       }
       if (!context.requireUserApproval) return "allow";
+      const covered = Boolean(ctx.readOnly) && isWithin(projectRoot, command.cwd);
+      if (covered && investigationApproved) return "allow";
       let reason = context.approvalReason;
       // The reviewer answers only what the deterministic boundary leaves to it:
       // a sandboxed, non-destructive command. Without the sandbox, or for a
@@ -273,12 +278,15 @@ export async function workerHostContext(
           planRevision: ctx.project.planRevision,
           kind: "bash",
           action,
-          reason: reason ?? "Approve this exact program, arguments, and working directory.",
+          reason: covered
+            ? [reason, INVESTIGATION_APPROVAL].filter(Boolean).join(" ")
+            : (reason ?? "Approve this exact program, arguments, and working directory."),
           cwd: command.cwd,
           ...commandApprovalDisplay(command),
         },
         ctx.signal,
       );
+      if (allowed && covered && !ctx.signal.aborted) investigationApproved = true;
       if (!allowed && !ctx.signal.aborted)
         onDenied?.("Tool approval denied or cancelled. Worker stopped.");
       return allowed && !ctx.signal.aborted ? "allow" : "deny";
@@ -336,16 +344,6 @@ async function commandFileEvidence(
   return files;
 }
 
-/**
- * Some runners (Django's test command, unittest discovery on an empty tree)
- * exit 0 without running a single test. That is not verification evidence.
- */
-export function ranNoTests(output: string): boolean {
-  return /\bRan 0 tests?\b|\bNO TESTS RAN\b|\bFound 0 test\(s\)|\bcollected 0 items\b|\bno tests ran\b/i.test(
-    output,
-  );
-}
-
 export async function verifyWorker(context: WorkerContext): Promise<VerificationView> {
   const ctx = await workerExecutionContext(context);
   const configured = ctx.project.policy.verification.commands;
@@ -353,13 +351,9 @@ export async function verifyWorker(context: WorkerContext): Promise<Verification
   const environment = await selectProjectEnvironment(ctx.projectRoot ?? ctx.cwd, {
     need: ctx.environmentNeed,
   });
-  const extraPath =
-    ctx.extraPath ??
-    (environment?.virtualenv
-      ? [join(environment.virtualenv, process.platform === "win32" ? "Scripts" : "bin")]
-      : []);
-  ctx.extraPath = extraPath;
   const adapter = new PythonUvAdapter();
+  const extraPath = ctx.extraPath ?? (environment && adapter.workerPath(environment)) ?? [];
+  ctx.extraPath = extraPath;
   const host = await workerHostContext(ctx, {
     rewriteInvocation: environment
       ? (program, args) => adapter.rewriteInvocation(program, args, environment)
@@ -380,7 +374,11 @@ export async function verifyWorker(context: WorkerContext): Promise<Verification
       );
     },
     ctx.signal,
-    { stopOnError: true, onCommand: (command) => ctx.onActivity?.(`Checking: ${command}`) },
+    {
+      stopOnError: true,
+      stopOnFailure: context.stopOnFailure,
+      onCommand: (command) => ctx.onActivity?.(`Checking: ${command}`),
+    },
   );
 }
 
@@ -482,9 +480,13 @@ export function createPiWorker(): WorkerPort {
       const startedAt = Date.now();
       const aborter = new AbortController();
       const signal = AbortSignal.any([context.signal, aborter.signal]);
-      const ctx = await workerExecutionContext({ ...context, signal });
+      const clock = attemptClock(() => aborter.abort());
+      const ctx = await workerExecutionContext({
+        ...context,
+        signal,
+        approvals: clock.approvals(context.approvals),
+      });
       await refreshPolicy(ctx);
-      const timer = setTimeout(() => aborter.abort(), INTERACTIVE_ATTEMPT_MS);
       // Pi's grep/find helpers otherwise download binaries directly. Dispatch
       // never grants that separate network/install authority implicitly. Finder
       // launches also omit common package-manager paths, so add only the same
@@ -513,9 +515,7 @@ export function createPiWorker(): WorkerPort {
       let environment = await selectProjectEnvironment(ctx.projectRoot ?? ctx.cwd, {
         need: ctx.environmentNeed,
       });
-      const extraPath = environment?.virtualenv
-        ? [join(environment.virtualenv, process.platform === "win32" ? "Scripts" : "bin")]
-        : [];
+      const extraPath = (environment && adapter.workerPath(environment)) ?? [];
       ctx.extraPath = extraPath;
       const envRef = { current: environment };
       try {
@@ -578,10 +578,9 @@ export function createPiWorker(): WorkerPort {
               }
             },
           });
-          if (environment.virtualenv) {
-            ctx.extraPath = [
-              join(environment.virtualenv, process.platform === "win32" ? "Scripts" : "bin"),
-            ];
+          const workerPath = adapter.workerPath(environment);
+          if (workerPath) {
+            ctx.extraPath = workerPath;
             host.extraPath = ctx.extraPath;
           }
           envRef.current = environment;
@@ -856,7 +855,7 @@ export function createPiWorker(): WorkerPort {
           result.error = INTERACTIVE_ATTEMPT_LIMIT_ERROR;
         }
       } finally {
-        clearTimeout(timer);
+        clock.stop();
         session?.dispose();
         endSandboxedEnvironment();
         reapOrphans(runMarker(privateHome));
@@ -937,6 +936,3 @@ async function evidencePatch(
   if (diff.code > 1) throw new Error(diff.stderr);
   return diff.stdout.replaceAll("a/before/", "a/").replaceAll("b/after/", "b/");
 }
-
-export { compileArgv };
-export type { HostCommandContext };

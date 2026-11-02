@@ -14,6 +14,7 @@ tmp/
 .test-data/
 .idea/
 .vscode/
+.claude/
 *.dmg
 *.zip
 Thumbs.db

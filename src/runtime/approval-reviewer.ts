@@ -117,7 +117,7 @@ export function createApprovalReviewer(store: FileStore) {
         { mode: 0o600 },
       );
       return decision;
-    } catch (error) {
+    } catch {
       return {
         decision: "ask_user",
         reason: signal.aborted

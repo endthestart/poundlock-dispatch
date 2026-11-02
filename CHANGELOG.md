@@ -5,6 +5,81 @@
 The first public release, a developer preview. Autopilot is a preview. Tested with
 Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
 
+- Acceptance first: in the Frontier tier the Planner writes each feature's end-to-end test
+  from your scenarios. Dispatch adds it, frozen, when the task that must pass it starts, and
+  puts it back if a worker changes it.
+- A task's first attempt gets two thirds of its time, then its checks run, so a repair can
+  still follow. Before, most tasks that ran out of time never had a repair.
+- With web search on, the manager and Planner can also search GitHub (`github_search`), and
+  the Planner can save excerpts of pages it read for the workers, who stay offline: each task
+  gets the excerpts it cites and the best matches for its words.
+- Test connection saves only the address and token. Suggested models never include an
+  external worker, or an external manager your token can't use, and they show when the
+  setup opens on Models.
+- An answer you type to a run that stopped for your input reaches that run, and its question
+  is on the run card. A stop you asked for shows on the card; a message to a run that is
+  still preparing is no longer answered as if its runner were not running.
+- A paused run's clock stops where it paused, a $0.50 Planner cap shows as $0.50, and
+  Resume is offered only where the run can go on.
+- If one pane can't be drawn, it says so and the rest of the window keeps working, instead
+  of a blank window.
+- A model request may wait 10 minutes for its answer to start, as the OpenAI SDK does, not 5.
+  A local model reading a long prompt, or a request queued for a busy model, no longer fails
+  as a timeout after 5 minutes.
+- One approval covers an investigation: once you approve its first command, its other
+  commands in the project folder run without asking. They run in a sandbox that can neither
+  change files nor use the network.
+- Every requirement chip names its verdict in words, only the run's standing is announced to
+  screen readers, Normal density says how many steps it folded, and the run's buttons stay
+  in view while its card scrolls.
+- The Autopilot start dialog names the Planner the run will use, a project's own worker
+  before the app's, so it no longer asks consent for a model the run won't use. The card
+  shows a run's time limit as a duration ("30 m"), not "0.524 h".
+- An Autopilot start refused for its folder or worker, such as a worker off the operator's
+  network, now leaves the plan unapproved, instead of approving it and then refusing.
+- A client watching a folder whose holder crashed takes it over on its next poll, and says
+  so, instead of watching nobody until it is reopened. A dead holder frees the folder at
+  once, and the lock no longer writes a heartbeat to disk every 10 seconds.
+- Model suggestions skip disabled profiles and never pair a worker with the manager on
+  one machine's model slot, and saving such a pair, or a disabled model, is refused with
+  why. Dispatch reads the permissions a controller says its token holds instead of
+  probing model by model, and shows the controller's permission names in every hint.
+- Permissions are named as Poundlock Access names them: Dispatch shows the labels the
+  controller publishes, so "Call external providers" is now "Send prompts and files to
+  external services". A missing permission's hint says to edit this token in Access and tick
+  it, not to create a replacement.
+- Testing a new connection no longer picks your manager and worker models for you, or
+  records destination approvals you didn't give. The Models step suggests a choice, and
+  nothing is bound until you save it.
+- Desktop Autopilot finds the terminal client when it was installed with `--bin`: the
+  installer also keeps a launcher beside its versions, and the app falls back to it.
+- A token with only List available models, Send inference requests and Send prompts and
+  files to external services can now choose an external model. Dispatch used to read its
+  permissions only from the job options, which a
+  token without job permissions can't read, so it saw no external permission.
+- What earlier tasks learned survives a resume: it is recorded in the run's ledger, so a run
+  restarted after a crash, a reboot or an update still passes it on.
+- Autopilot tells later tasks what an abandoned task last failed on, so one trap doesn't cost
+  several tasks, and each task's brief names the frozen tests to leave exactly as they are,
+  formatting included.
+- Testing a local manager no longer asks for its limits first: the test checks the address and
+  the model, and fills in the context and output limits the server reports.
+- A run that ended short says why on its card and in the terminal (a limit, a full disk),
+  instead of only under Details. A full disk no longer reads "stopped by the owner".
+- The user guide's **Building a product on your own** walks through a product from the spec
+  to the merge, with what to do at each kind of stop.
+- **Message Autopilot** on the run card, or anything typed while a run builds: the worker on
+  the current task hears it before its next step, and every later task and the Planner's
+  next milestone plan or review read it. `dispatch autopilot message --text` does the same
+  from a shell. Before, only the Planner read it, at its next milestone.
+- The run card and the terminal card show **Last 7 days, all projects**: what the manager
+  and the Planner cost across every project.
+- **Transcript: Normal or Verbose,** beside the composer. Normal folds each reply's tool
+  steps and shows one update between messages; Verbose opens every step and update. Dispatch
+  remembers the choice on this Mac.
+- Electron 44.9.1, and undici 8.12.2 in place of the 8.10.2 that Pi pins and the 7.29.1 that
+  the OpenAI client used, for October's advisories, among them an undici certificate-check
+  bypass (CVE-2026-109383).
 - The manager and the Autopilot Planner can search the web and read public pages through
   your own SearXNG instance. Set its address in Settings → Connection → Web search, then turn
   on "Web search for the manager and Planner" in a project's Network settings. Queries that
@@ -20,8 +95,8 @@ Poundlock 0.3.0 (contract revision 5) and Toolkit 0.5.0.
   Poundlock release instead of a private build.
 - Packages carry the full license texts for this platform's dependencies, the bundled
   fonts and the Catppuccin colours, and the app also carries Electron's own license and
-  Chromium's notices. The app runs the Electron the lockfile selects (44.7.0); an old
-  packaging override forced 44.3.0. `scripts/check-package.cjs` checks a built app.
+  Chromium's notices. The app runs the Electron the lockfile selects; an old packaging
+  override forced 44.3.0. `scripts/check-package.cjs` checks a built app.
 - The terminal client and its installer require Node 22.19.0, as Pi 1.1.0 does.
 - GitHub CI runs every check on pull requests, forks included; a tag attaches the tested
   packages to a draft release only after approval. `tests/e2e/run.mjs` runs Dispatch
@@ -220,7 +295,7 @@ From a retrospective of a long unattended application build:
 ## 0.2.18 (October 2026)
 
 - An escalation you declined is not offered or requested again in that run, until you
-  mention escalation in a message. A local manager asked for the same declined Mac Pro
+  mention escalation in a message. A local manager asked for the same declined
   escalation on two tasks within an hour.
 
 ## 0.2.17 (October 2026)

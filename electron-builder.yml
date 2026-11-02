@@ -14,11 +14,9 @@ files:
   # Type-check output, not app code.
   - "!out/types-node/**"
   - "!out/notices/**"
+  - "!out/types-web/**"
   - package.json
-  - scripts/git-askpass.sh
 extraResources:
-  - from: scripts/git-askpass.sh
-    to: git-askpass.sh
   - from: assets/tray
     to: tray
   - from: LICENSE

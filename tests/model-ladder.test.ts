@@ -1,10 +1,9 @@
 import {
   DIFFICULTY_CONTEXT_THRESHOLD,
-  projectWorkerRoles,
   resolveInteractiveWorkerProfile,
   resolveStartingWorkerBinding,
 } from "@core/role-routing";
-import type { RoleBinding, RoleMap } from "@shared/roles";
+import { projectWorkerRoles, type RoleBinding, type RoleMap } from "@shared/roles";
 import type { CapabilityMeasurement, ConnectionSettings, InteractiveModel } from "@shared/types";
 import { describe, expect, it } from "vitest";
 
@@ -179,24 +178,6 @@ describe("resolveStartingWorkerBinding: legacy escalation settings still load", 
     const connection: ConnectionSettings = { url: "", token: "", roles: legacyRoles };
     const models = [base, vega];
     const result = resolveStartingWorkerBinding(models, legacyRoles, connection, "medium");
-    expect(result.model.id).toBe("vega");
-  });
-
-  it("loads a saved binding that only has the deprecated routingRevision field", () => {
-    const legacyBinding: RoleBinding = {
-      profileId: "vega",
-      profileName: "vega",
-      source: "interactive",
-      routingRevision: "r1",
-    };
-    const connection: ConnectionSettings = {
-      url: "",
-      token: "",
-      roles,
-      escalation: { profiles: [legacyBinding], mode: "standing", maxTransitionsPerRun: 3 },
-    };
-    const models = [base, { ...vega, routingRevision: "r1" }];
-    const result = resolveStartingWorkerBinding(models, roles, connection, "medium");
     expect(result.model.id).toBe("vega");
   });
 });

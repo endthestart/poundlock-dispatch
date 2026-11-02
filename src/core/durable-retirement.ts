@@ -31,6 +31,8 @@ interface LegacyProject {
   /** The walk-away grant, which pre-approved a job upload; nothing reads it any more. */
   unattended?: unknown;
   integration: {
+    /** The review workspace's revision, which job results moved on. */
+    headRevision?: string;
     appliedOriginalRevision?: string;
     combinedJobId?: string;
     combinedRequest?: unknown;
@@ -66,11 +68,10 @@ function isFinished(task: TaskRecord): boolean {
  */
 function resultsLeftInWorkspace(project: ProjectRecord): boolean {
   if (project.source.kind !== "local_folder") return false;
-  const { appliedOriginalRevision } = (project as ProjectRecord & LegacyProject).integration;
+  const { appliedOriginalRevision, headRevision } = (project as ProjectRecord & LegacyProject)
+    .integration;
   const copied = appliedOriginalRevision ?? project.source.baseRevision;
-  return Boolean(
-    project.integration.headRevision && copied && project.integration.headRevision !== copied,
-  );
+  return Boolean(headRevision && copied && headRevision !== copied);
 }
 
 /**

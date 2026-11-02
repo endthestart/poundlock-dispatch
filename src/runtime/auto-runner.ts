@@ -29,6 +29,7 @@ import {
 import { storeBoard } from "@core/goal/board";
 import { frozenDecider, goalDriver } from "@core/goal/driver";
 import { goalReport } from "@core/goal/report";
+import { ReferencePacket } from "@core/goal/research";
 import { nowIso } from "@core/ids";
 import { PoundlockClient } from "@core/poundlock";
 import { FileStore } from "@core/store";
@@ -37,6 +38,7 @@ import { isInferenceUnavailable } from "@runtime/auto-worker";
 import { createPlanner } from "@runtime/planner";
 import { createWebTools } from "@runtime/web-tools";
 import type { AutoOutcome } from "@shared/auto-run";
+import { fallbackNotice, type ModelFallback } from "@shared/spending-limit";
 import type { ConnectionSettings, InteractiveModel } from "@shared/types";
 import { webSearchFor } from "@shared/web-search";
 
@@ -86,7 +88,7 @@ export async function runAutoRunner(
   try {
     const before = await ledger.state();
     if (before.outcome === "objective_met") {
-      await log("already finished: every case verified");
+      await log("already finished: every task verified");
       return before.outcome;
     }
     await acquireProjectLock(deps.paths, run.projectKey, run.runId);
@@ -99,7 +101,11 @@ export async function runAutoRunner(
           if (diskWarned || disk.bavail * disk.bsize >= MIN_FREE_WHILE_RUNNING) return;
           diskWarned = true;
           await log("stopping now: the disk is nearly full");
-          await ledger.writeControl("stop_now", `disk-${Date.now()}`);
+          await ledger.writeControl(
+            "stop_now",
+            `disk-${Date.now()}`,
+            "the disk is nearly full: free space on this Mac, then resume the run",
+          );
         })
         .catch(() => undefined);
     }, deps.heartbeatMs ?? 5000);
@@ -150,6 +156,18 @@ export async function runAutoRunner(
           `The Planner, ${wanted.model}, now sends code to ${plannerModel.dataDestination ?? "an unknown destination"}, not ${wanted.destination} as agreed. Start a new run.`,
         );
     }
+    // The owner's local fallback for a cloud role refused for a spending limit;
+    // a switch made before a resume holds for the rest of the run.
+    const fallback = await localFallback(connection, await client.listInteractiveModels(), log);
+    const resumedOn = (role: ModelFallback["role"]) =>
+      fallback && before.fallbacks?.some((item) => item.role === role) ? fallback : undefined;
+    const onFallback = async (event: ModelFallback) => {
+      await ledger.append({ type: "model_fallback", ...event });
+      activity = fallbackNotice(event);
+      await log(activity);
+    };
+    const workerOn = resumedOn("worker");
+    const plannerOn = resumedOn("planner");
     const isolation = runIsolation(run, isolationOptions);
     activity = "starting the container";
     await isolation.check();
@@ -174,8 +192,9 @@ export async function runAutoRunner(
         checks: run.checks,
         protectedPaths: run.scope.protectedPaths ?? [],
       }),
-      model,
-      lastApprovedRoutingRevision: run.routingRevision,
+      model: workerOn ?? model,
+      lastApprovedRoutingRevision: workerOn?.routingRevision ?? run.routingRevision,
+      ...(fallback ? { fallback, onFallback } : {}),
       controllerUrl: connection.url,
       token: connection.token,
       capabilities,
@@ -200,9 +219,11 @@ export async function runAutoRunner(
             planner: createPlanner({
               controllerUrl: connection.url,
               token: connection.token,
-              model: plannerModel,
+              model: plannerOn ?? plannerModel,
               capabilities,
-              lastApprovedRoutingRevision: run.goal.planner.routingRevision,
+              lastApprovedRoutingRevision:
+                plannerOn?.routingRevision ?? run.goal.planner.routingRevision,
+              ...(fallback ? { fallback, onFallback } : {}),
               worktree: run.worktree,
               project: autoProject({
                 runId: run.runId,
@@ -243,6 +264,10 @@ export async function runAutoRunner(
             checkpoint: run.goal.checkpoint,
             advisory: run.goal.advisory,
             spendCapUsd: run.goal.spendCapUsd,
+            // What a gating Planner reads on the web is kept for the workers (roadmap item 2).
+            ...(run.goal.webSearch && !run.goal.advisory
+              ? { packet: new ReferencePacket(join(runDir, "references.json")) }
+              : {}),
             isUnavailable: (error: unknown) =>
               isInferenceUnavailable(error instanceof Error ? error.message : String(error)),
             onActivity: (text: string) => {
@@ -300,6 +325,7 @@ export async function runAutoRunner(
         run,
         await ledger.state(),
         board && run.board ? await board.getPlan(run.board.projectId) : undefined,
+        await new ReferencePacket(join(runDir, "references.json")).all(),
       ),
       { mode: 0o600 },
     ).catch((error) => log(`could not write the report: ${String(error)}`));
@@ -334,4 +360,28 @@ export async function runAutoRunner(
     caffeinate?.kill();
     await release();
   }
+}
+
+/** The owner's local fallback, if Poundlock still offers it on their own network. */
+async function localFallback(
+  connection: ConnectionSettings,
+  models: InteractiveModel[],
+  log: (text: string) => Promise<unknown>,
+): Promise<InteractiveModel | undefined> {
+  const binding = connection.roles.fallback;
+  if (!binding) return undefined;
+  const model = models.find((item) => (item.profileId ?? item.id) === binding.profileId);
+  if (!model) {
+    await log(
+      `Poundlock no longer offers the local fallback ${binding.profileName}: a spending refusal stops this run.`,
+    );
+    return undefined;
+  }
+  if (model.dataDestination !== "operator_network") {
+    await log(
+      `The local fallback ${model.id} no longer runs on your own network: a spending refusal stops this run.`,
+    );
+    return undefined;
+  }
+  return model;
 }

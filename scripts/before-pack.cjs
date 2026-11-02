@@ -9,8 +9,16 @@ function canonical(path) {
 
 function assertOutputClosed(output, commands) {
   const root = canonical(output) + sep;
-  if (commands.split("\n").some(command => command.trim().startsWith("/") && canonical(command.trim()).startsWith(root))) {
-    throw new Error(`Quit the app in ${output} before packaging. Rebuilding an open app can invalidate its cached resources.`);
+  if (
+    commands
+      .split("\n")
+      .some(
+        (command) => command.trim().startsWith("/") && canonical(command.trim()).startsWith(root),
+      )
+  ) {
+    throw new Error(
+      `Quit the app in ${output} before packaging. Rebuilding an open app can invalidate its cached resources.`,
+    );
   }
 }
 

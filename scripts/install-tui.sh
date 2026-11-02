@@ -7,8 +7,9 @@
 # Builds the client, installs it with only its production dependencies (from
 # package-lock.json) under ~/.local/share/poundlock-dispatch/tui/<version>, points
 # `current` at it, and writes DIR/dispatch (default ~/.local/bin) to run it with
-# Node 22.19.0 or newer, which Pi 1.1.0 requires. The previous version stays for --rollback. It changes nothing
-# else: projects, history and the connection are where the client keeps them.
+# Node 22.19.0 or newer, which Pi 1.1.0 requires. The previous version stays for
+# --rollback. It changes nothing else: projects, history and the connection are
+# where the client keeps them.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -62,11 +63,15 @@ trap - EXIT
 [ -L "$root/current" ] && ln -sfn "$(readlink "$root/current")" "$root/previous"
 ln -sfn "$target" "$root/current"
 mkdir -p "$bin"
-cat > "$bin/dispatch" <<SHIM
+# The same launcher also goes beside the versions, where the desktop app finds it
+# whatever --bin was.
+for launcher in "$bin/dispatch" "$root/dispatch"; do
+  cat > "$launcher" <<SHIM
 #!/bin/sh
 # Poundlock Dispatch terminal client; installed by scripts/install-tui.sh.
 exec "$node" "$root/current/out/tui/index.js" "\$@"
 SHIM
-chmod 755 "$bin/dispatch"
+  chmod 755 "$launcher"
+done
 echo "Installed dispatch $version ($commit) as $bin/dispatch"
 case ":$PATH:" in *":$bin:"*) ;; *) echo "Add $bin to your PATH to run it as dispatch." ;; esac

@@ -13,9 +13,10 @@ import { describeReach, projectReach } from "@shared/network";
  * re-wrapping lines that were already wrapped for a different terminal.
  */
 
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
-import { newestRun, statusLines } from "@core/auto/runs";
+import { realpath, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { autopilotView } from "@core/auto/control";
+import { newestRun } from "@core/auto/runs";
 import type { DispatchHost } from "@core/host/dispatch-host";
 import { copyToClipboard } from "@earendil-works/pi-coding-agent";
 import {
@@ -36,12 +37,17 @@ import {
   VStack,
 } from "@earendil-works/pi-tui";
 import { approvalView } from "@shared/approval-view";
+import type { AutopilotStartOptions, AutopilotView } from "@shared/auto-run";
+import { autopilotCard, autopilotCardLines, autopilotOwnsStatus } from "@shared/autopilot-card";
+import { autopilotStartPreview } from "@shared/autopilot-start";
+import type { TranscriptDensity } from "@shared/live-work-view";
 import {
   effectiveToolTrust,
   TOOL_TRUST_MODES,
   type ToolTrustMode,
   toolTrustLabel,
 } from "@shared/permissions";
+import { fixRoundsPerTask } from "@shared/policy-limits";
 import { projectStatusView } from "@shared/project-status";
 import { conversationReasoningView, isReasoningChoice, reasoningLabel } from "@shared/reasoning";
 import type { ExecutionRole, RoleBinding, RoleMap } from "@shared/roles";
@@ -49,20 +55,59 @@ import {
   bindingForProfile,
   catalogFromProbe,
   EXECUTION_ROLES,
+  guessRoleMap,
   roleUnavailableReason,
 } from "@shared/roles";
 import { compactOffered } from "@shared/status-infolets";
-import { type AppStateView, EXAMPLE_CONTROLLER_URL } from "@shared/types";
+import { type AppStateView, EXAMPLE_CONTROLLER_URL, type RunHistoryRecord } from "@shared/types";
+import { accountLines, parseAccounts, TOKEN_HINT } from "./accounts.js";
+import { permissionsCommand } from "./app-permissions.js";
+import { appearanceLines, parseAppearance } from "./appearance.js";
 import { type AutoCliDeps, runAuto, splitCommandLine } from "./auto.js";
+import { autoCardFooter } from "./auto-card.js";
+import { renderRunDetails } from "./auto-details.js";
+import { confirmMerge } from "./auto-merge.js";
+import { askStartOptions } from "./auto-start.js";
 import { BoxedEditor } from "./boxed-editor.js";
 import { Card, type CardSpec } from "./card.js";
+import { checksCommand } from "./checks.js";
 import { fitSentence, GUTTER, gutter, type KeyHint, keyHints, rule } from "./chrome.js";
 import { type ColourRole, type Colours, resolveColours } from "./colour.js";
-import { COMMAND_DEFS, NETWORK_CHOICES, toSlashCommands } from "./commands.js";
+import {
+  COMMAND_DEFS,
+  isTranscriptDensity,
+  NETWORK_CHOICES,
+  TRANSCRIPT_DENSITY,
+  toSlashCommands,
+} from "./commands.js";
 import { connectController } from "./connect.js";
+import { fixRoundsCommand } from "./fix-rounds.js";
+import { renderHistory } from "./history.js";
 import { displaySafe } from "./jobs.js";
+import { ladderCommand } from "./ladder.js";
+import { type ConfirmedProjectAction, confirmProjectAction } from "./lifecycle.js";
+import {
+  localManagerLines,
+  localManagerOff,
+  localManagerSettings,
+  parseLocalManager,
+} from "./local-manager.js";
 import { ensureHighlightTheme, markdownTheme } from "./markdown-theme.js";
+import {
+  DESTINATION_USAGE,
+  destinationOverride,
+  modelDetailLines,
+  modelListRows,
+} from "./model-detail.js";
 import { showPicker } from "./picker.js";
+import { memoryPreferences, type TuiPreferenceStore } from "./preferences.js";
+import {
+  repoAccountChoice,
+  repoAccountLine,
+  runtimeChoice,
+  runtimeLines,
+} from "./project-access.js";
+import { matchProfile, projectModelCommand } from "./project-model.js";
 import { showPrompt } from "./prompt.js";
 import {
   actionHints,
@@ -78,9 +123,11 @@ import {
   renderTitleBar,
   wrap,
 } from "./render.js";
+import { pickTask, renderTaskEvidence } from "./task-evidence.js";
 import { TranscriptView } from "./transcript.js";
+import { WEB_SEARCH_USAGE, webSearchCommand } from "./web-search.js";
 
-type ScreenId = "conversation" | "board" | "setup";
+type ScreenId = "conversation" | "board" | "setup" | "history" | "run" | "task";
 
 /** Ctrl+R first: it arrives unchanged in every terminal. See `defaultTui`. */
 export const SEARCH_KEYS = ["ctrl+r", "ctrl+shift+f"] as const;
@@ -208,6 +255,13 @@ export class TuiApp {
   /** The board and setup screens, drawn to the width they get. */
   private readonly boardView: LineView;
   private readonly setupView: LineView;
+  private readonly historyView: LineView;
+  private readonly runView: LineView;
+  private readonly taskView: LineView;
+  /** The task `/task` opened, by id, and the attempt by number; read afresh at each paint. */
+  private taskShown: { taskId: string; attempt?: number } | undefined;
+  /** What `/history` read, shown until the next `/history`. */
+  private history: RunHistoryRecord[] = [];
   /**
    * The plan, approval and question cards, pinned above the status lines so
    * they stay in view while the conversation scrolls. Kept by key across
@@ -249,9 +303,15 @@ export class TuiApp {
   /** Local auto mode: this folder's newest run, and its card while it runs or just ended. */
   private autoRun: string | undefined;
   private autoLines: string[] | undefined;
+  /** The newest run's card and view, shown or hidden: `/auto details` reads them. */
+  private autoCard: string[] | undefined;
+  private autoView: AutopilotView | undefined;
+  private autoPhase: AutopilotView["phase"] | undefined;
   /** A run whose card `/auto hide` put away; it comes back for the next run. */
   private autoHidden: string | undefined;
   private autoTimer: ReturnType<typeof setInterval> | undefined;
+  /** How much of the work the transcript shows: `/transcript`, remembered on this computer. */
+  private density: TranscriptDensity = "normal";
 
   constructor(
     private readonly host: DispatchHost,
@@ -260,6 +320,7 @@ export class TuiApp {
     colours: Colours = resolveColours(),
     /** Local auto mode's commands (ADR 014); without them `/auto` is unavailable. */
     private readonly autoDeps?: Omit<AutoCliDeps, "io">,
+    private readonly preferences: TuiPreferenceStore = memoryPreferences(),
   ) {
     this.colours = colours;
     // pi-coding-agent keeps its syntax-highlight theme in module state; this
@@ -305,6 +366,17 @@ export class TuiApp {
       this.state
         ? gutter(renderSetup(this.state, Math.max(1, width - GUTTER * 2), colours).lines)
         : [],
+    );
+    this.historyView = new LineView((width) =>
+      gutter(renderHistory(this.history, Math.max(1, width - GUTTER * 2), colours)),
+    );
+    this.runView = new LineView((width) =>
+      gutter(
+        renderRunDetails(this.autoCard, this.autoView, Math.max(1, width - GUTTER * 2), colours),
+      ),
+    );
+    this.taskView = new LineView((width) =>
+      gutter(this.renderTask(Math.max(1, width - GUTTER * 2))),
     );
     this.divider = new LineView((width) =>
       this.cards.size ? [] : [rule(width, undefined, colours)],
@@ -378,6 +450,14 @@ export class TuiApp {
       this.paint();
     });
     this.state = await this.host.getState();
+    try {
+      this.density = (await this.preferences.read()).transcriptDensity;
+    } catch (error) {
+      this.host.setNotice({
+        kind: "error",
+        text: `Could not read this client's saved settings, so the transcript is Normal: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
     // Up and Down in the composer walk back through what you have sent, as
     // Pi does when it resumes a session. The editor keeps newest first.
     for (const message of this.state.snapshot?.messages ?? [])
@@ -402,6 +482,12 @@ export class TuiApp {
     // screen that cannot do anything until someone finds the desktop app.
     if (!this.state.connection.url || !this.state.connection.tokenConfigured)
       void this.run(() => this.connect("/connect"));
+    // Otherwise read what Poundlock serves, so models are named rather than shown by id.
+    else
+      void this.host
+        .refreshServerInfo()
+        .then(() => this.host.emitState())
+        .catch(() => undefined);
   }
 
   async stop(): Promise<void> {
@@ -450,6 +536,9 @@ export class TuiApp {
     this.body.clear();
     if (this.screen === "board") this.body.addChild(this.boardView);
     else if (this.screen === "setup") this.body.addChild(this.setupView);
+    else if (this.screen === "history") this.body.addChild(this.historyView);
+    else if (this.screen === "run") this.body.addChild(this.runView);
+    else if (this.screen === "task") this.body.addChild(this.taskView);
     else {
       if (snapshot) {
         const pending = this.pendingDecision();
@@ -457,10 +546,12 @@ export class TuiApp {
         // transcript shows just enough of it for context, and its own
         // reply-in-progress (there cannot be one — a turn does not stream
         // while an approval is open) is never shown either.
-        this.transcript.sync(
-          pending ? snapshot.messages.slice(-4) : snapshot.messages,
-          pending ? undefined : state.managerDraft,
-        );
+        if (pending) this.transcript.sync(snapshot.messages.slice(-4), undefined, this.density);
+        else
+          this.transcript.sync(snapshot.messages, state.managerDraft, this.density, {
+            entries: state.liveWork,
+            activity: state.activity,
+          });
       }
       this.body.addChild(this.banner);
       this.body.addChild(this.transcriptComponent);
@@ -501,10 +592,10 @@ export class TuiApp {
         search,
         exit,
       ];
-    if (this.screen === "setup")
+    if (["setup", "history", "run", "task"].includes(this.screen))
       return [
         { key: "/chat", label: "back to chat" },
-        { key: "/connect", label: "connection" },
+        ...(this.screen === "setup" ? [{ key: "/connect", label: "connection" }] : []),
         { key: "/", label: "commands" },
         scroll,
         exit,
@@ -515,7 +606,9 @@ export class TuiApp {
       : undefined;
     return [
       ...(this.choosableCard() ? [{ key: "Tab", label: "answer the card" }] : []),
-      ...(status ? actionHints(status.actions) : []),
+      ...(status && !autopilotOwnsStatus(this.state?.autopilot, status.cause)
+        ? actionHints(status.actions)
+        : []),
       ...(this.state && compactOffered(this.state)
         ? [{ key: "/compact", label: "free up context" }]
         : []),
@@ -684,13 +777,12 @@ export class TuiApp {
       const lines = this.autoLines;
       specs.push({
         key: `auto:${this.autoRun}`,
-        title: "Auto run · verified, not reviewed",
+        title: "Autopilot",
         role: "accent2",
         // Activity and reasons carry the model's words: nothing in them may drive the terminal.
         body: (inner) => lines.flatMap((line) => wrap(displaySafe(line), inner)),
         maxBodyLines: 8,
-        footer:
-          "/auto stop · /auto stop --now · /auto export · /auto hide · runs on after you quit",
+        footer: autoCardFooter(this.autoPhase),
       });
     }
     return specs;
@@ -707,17 +799,37 @@ export class TuiApp {
     const folder = this.folder();
     if (!this.autoDeps || !folder || this.closing) return;
     const runDir = await newestRun(this.autoDeps.paths, folder).catch(() => undefined);
+    const view = runDir
+      ? await autopilotView(this.autoDeps.paths, folder).catch(() => undefined)
+      : undefined;
+    const card = view
+      ? autopilotCardLines(
+          autopilotCard(
+            view,
+            this.state?.snapshot?.plan?.requirements ?? [],
+            new Date(),
+            this.state?.snapshot?.managerUsd,
+            this.state?.weekUsd,
+          ),
+        )
+      : undefined;
     let lines: string[] | undefined;
-    if (runDir && runDir !== this.autoHidden) {
-      const current = await statusLines(runDir).catch(() => undefined);
-      const ended = current?.some((line) => line.startsWith("Ended:"));
+    if (runDir && runDir !== this.autoHidden && view) {
       const status = await stat(join(runDir, "status.json")).catch(() => undefined);
       const recent = !status || Date.now() - status.mtimeMs < 30 * 60_000;
-      lines = !ended || recent ? current : undefined;
+      lines = view.phase !== "ended" || recent ? card : undefined;
     }
     if (this.closing) return;
-    if (runDir === this.autoRun && JSON.stringify(lines) === JSON.stringify(this.autoLines)) return;
+    if (
+      runDir === this.autoRun &&
+      JSON.stringify([view, card, lines]) ===
+        JSON.stringify([this.autoView, this.autoCard, this.autoLines])
+    )
+      return;
     this.autoRun = runDir;
+    this.autoPhase = view?.phase;
+    this.autoView = view;
+    this.autoCard = card;
     this.autoLines = lines;
     this.paint();
   }
@@ -729,12 +841,23 @@ export class TuiApp {
    */
   private async auto(input: string): Promise<void> {
     const folder = this.folder();
-    if (!this.autoDeps) throw new Error("Local auto mode is not available in this client.");
     if (!folder) throw new Error("Open a folder first: an auto run works on one repository.");
+    // The guided start goes through the host, as the app's dialog does.
+    if (/^\/\S+\s+start\s*$/.test(input.trim())) return this.guidedStart();
+    if (!this.autoDeps) throw new Error("Local auto mode is not available in this client.");
+    // `/auto message <words>`: the words as typed, apostrophes and all, to this folder's run.
+    const words = /^\/\S+\s+message\s+(?!--)(.+)$/s.exec(input.trim())?.[1];
+    if (words) return this.runAutoArgv(["message", "--text", words, "--dir", folder]);
     const [command = "status", ...rest] = splitCommandLine(input).slice(1);
     if (command === "hide") {
       this.autoHidden = this.autoRun;
       this.autoLines = undefined;
+      this.paint();
+      return;
+    }
+    if (command === "details") {
+      await this.refreshAuto();
+      this.screen = "run";
       this.paint();
       return;
     }
@@ -744,12 +867,65 @@ export class TuiApp {
       return;
     }
     if (command === "run") throw new Error("The runner starts from /auto start or /auto resume.");
+    if (command === "merge" && !rest.includes("--yes")) {
+      const runDir = await newestRun(this.autoDeps.paths, folder);
+      if (!runDir) throw new Error("This folder has no Autopilot run.");
+      if (await confirmMerge(this.tui, this.colours, runDir))
+        await this.runAutoArgv(["merge", "--yes", "--dir", folder]);
+      return;
+    }
     const argv = [command, ...rest];
     const named = rest.length > 0 && !rest[0].startsWith("-");
     const hasDir = rest.some((word) => word === "--dir" || word.startsWith("--dir="));
     if (!hasDir && (command === "start" || command === "list" || !named))
       argv.push("--dir", folder);
     if (command === "start" && !rest.includes("--no-wait")) argv.push("--no-wait");
+    await this.runAutoArgv(argv);
+  }
+
+  /** Run one `dispatch autopilot` command for this screen; what it says becomes the notice. */
+  /**
+   * `/autopilot start` with nothing after it: the app's "Build with Autopilot"
+   * dialog as questions, started through the host as the app starts it, so a
+   * pending plan is approved and confirmed checks become the project's.
+   */
+  private async guidedStart(): Promise<void> {
+    // The Planner's consent and spend cap depend on where it sends code, which
+    // only the catalog Poundlock serves now can say.
+    await this.host.refreshServerInfo();
+    const state = await this.host.getState();
+    if (!state.snapshot) throw new Error("Open a project first.");
+    const preview = autopilotStartPreview(state, state.snapshot);
+    // Nothing is working while a question waits for the owner.
+    this.working = undefined;
+    this.paint();
+    this.prompting = true;
+    let options: AutopilotStartOptions | undefined;
+    try {
+      options = await askStartOptions(preview, {
+        text: (title, detail, initial) =>
+          showPrompt(this.tui, this.colours, { title, detail, initial }),
+        choose: async (title, items) =>
+          (await showPicker(this.tui, this.colours, items, { title }))?.value,
+      });
+    } finally {
+      this.prompting = false;
+    }
+    if (!options) return;
+    this.working = "Starting Autopilot: checking the image and the VM";
+    this.paint();
+    try {
+      await this.host.autopilotStart(options, this.target());
+    } finally {
+      this.working = undefined;
+    }
+    this.autoHidden = undefined;
+    await this.host.emitState();
+    await this.refreshAuto();
+  }
+
+  private async runAutoArgv(argv: string[]): Promise<void> {
+    if (!this.autoDeps) throw new Error("Local auto mode is not available in this client.");
     const said: string[] = [];
     const code = await runAuto(argv, {
       ...this.autoDeps,
@@ -943,6 +1119,14 @@ export class TuiApp {
       ["/connect", async (input) => this.run(() => this.connect(input))],
       ["/chat", screen("conversation")],
       [
+        "/history",
+        async () =>
+          this.run(async () => {
+            this.history = await this.host.runHistory(this.target());
+            await screen("history")();
+          }),
+      ],
+      [
         "/compact",
         async (input) => {
           const instructions = input.slice("/compact".length).trim();
@@ -953,18 +1137,47 @@ export class TuiApp {
         },
       ],
       ["/approve", async () => this.run(() => this.host.approvePlan(this.target()))],
+      ["/new", async () => this.run(() => this.projectAction("newConversation"))],
+      ["/new-run", async () => this.run(() => this.projectAction("newRun"))],
+      [
+        "/task",
+        async (input) =>
+          this.run(async () => {
+            const tasks = this.state?.snapshot?.tasks ?? [];
+            const { task, attempt } = pickTask(tasks, input.trim().replace(/^\S+/, ""));
+            this.taskShown = { taskId: task.id, attempt: attempt?.number };
+            await screen("task")();
+          }),
+      ],
+      ["/archive", async () => this.run(() => this.leaveProject("archive"))],
+      ["/remove", async () => this.run(() => this.leaveProject("remove"))],
       [
         "/approve-models",
         async () => this.run(() => this.approveModels(), "Asking Poundlock for the current route…"),
       ],
       [
         "/models",
-        async () => this.run(() => this.listModels(), "Asking Poundlock for its models…"),
+        async (input) => this.run(() => this.listModels(input), "Asking Poundlock for its models…"),
       ],
       ["/role", async (input) => this.run(() => this.setRole(input), "Checking with Poundlock…")],
       ["/reasoning", async (input) => this.run(() => this.reasoning(input))],
+      ["/transcript", async (input) => this.run(() => this.transcriptDensity(input))],
       ["/trust", async (input) => this.run(() => this.trust(input))],
       ["/network", async (input) => this.run(() => this.network(input))],
+      ["/checks", async (input) => this.run(() => this.checks(input))],
+      ["/fix-rounds", async (input) => this.run(() => this.fixRounds(input))],
+      ["/runtime", async (input) => this.run(() => this.runtime(input))],
+      ["/repo-account", async (input) => this.run(() => this.repoAccount(input))],
+      ["/permissions", async (input) => this.run(() => this.permissions(input))],
+      ["/ladder", async (input) => this.run(() => this.ladder(input))],
+      ["/local-manager", async (input) => this.run(() => this.localManager(input))],
+      ["/accounts", async (input) => this.run(() => this.accounts(input))],
+      ["/appearance", async (input) => this.run(() => this.appearance(input))],
+      ["/websearch", async (input) => this.run(() => this.webSearch(input))],
+      [
+        "/project-model",
+        async (input) => this.run(() => this.projectModel(input), "Checking with Poundlock…"),
+      ],
       ["/autopilot", async (input) => this.run(() => this.auto(input), "Autopilot…")],
       ["/auto", async (input) => this.run(() => this.auto(input), "Autopilot…")],
       ["/grant", async (input) => this.run(() => this.grant(input))],
@@ -978,6 +1191,8 @@ export class TuiApp {
           });
         },
       ],
+      ["/grant-file", async (input) => this.run(() => this.readGrant(input, "grant"))],
+      ["/revoke-file", async (input) => this.run(() => this.readGrant(input, "revoke"))],
       ["/pause", async () => this.run(() => this.host.pauseRun(this.target()))],
       ["/cancel", async () => this.run(() => this.host.cancelRun(this.target()))],
       ["/resume", async () => this.run(() => this.host.startRun(this.target()))],
@@ -1035,8 +1250,9 @@ export class TuiApp {
         "Usage: /connect [address]. The token is asked for next, hidden: do not type it here.",
       );
     this.prompting = true;
+    let outcome: Awaited<ReturnType<typeof connectController>> | undefined;
     try {
-      const outcome = await connectController(
+      outcome = await connectController(
         this.host,
         {
           address: (current) =>
@@ -1076,6 +1292,312 @@ export class TuiApp {
       this.prompting = false;
       this.working = undefined;
     }
+    if (outcome?.kind === "connected") await this.chooseMissingModels();
+  }
+
+  /**
+   * The app's setup, step 2: once connected, choose the Manager and the Worker
+   * that are not set yet, in the same pickers `/role <role>` opens.
+   */
+  private async chooseMissingModels(): Promise<void> {
+    const missing = async (role: "manager" | "interactive") =>
+      !(await this.host.getState()).connection.roles?.[role]?.profileId;
+    for (const role of ["manager", "interactive"] as const) {
+      if (!(await missing(role))) continue;
+      await this.setRole(`/role ${role}`);
+      // Escape leaves the rest to /role, as closing the app's setup does.
+      if (await missing(role)) return;
+    }
+  }
+
+  /** `/new` and `/new-run`, confirmed in a picker as the app's Project menu confirms them. */
+  private async projectAction(id: ConfirmedProjectAction): Promise<boolean> {
+    return confirmProjectAction(id, {
+      host: this.host,
+      tui: this.tui,
+      colours: this.colours,
+      state: await this.host.getState(),
+    });
+  }
+
+  /**
+   * `/archive` and `/remove`. This screen is bound to its folder, so once the
+   * project is gone it closes and says what happened; opening the folder again
+   * starts a new project.
+   */
+  private async leaveProject(id: "archive" | "remove"): Promise<void> {
+    if (!(await this.projectAction(id))) return;
+    const said = (await this.host.getState()).notice?.text;
+    await this.stop();
+    if (said) process.stdout.write(`${said}\n`);
+    this.exit(0);
+  }
+
+  /**
+   * `/grant-file` and `/revoke-file`: Project settings' read exceptions. A
+   * relative path is in the project's folder; the host grants the real file a
+   * link points at, so taking one back matches on that too.
+   */
+  private async readGrant(input: string, change: "grant" | "revoke"): Promise<void> {
+    const id = this.requireProject();
+    const typed = input.trim().replace(/^\S+\s*/, "");
+    if (!typed) throw new Error(`Usage: /${change}-file <path>`);
+    const path = resolve(this.folder() ?? process.cwd(), typed);
+    if (change === "grant") {
+      await this.host.grantReadFile(id, path);
+      this.host.setNotice({ kind: "info", text: `The manager may now read ${path}.` });
+    } else {
+      const project = (await this.host.getState()).projects.find((item) => item.id === id);
+      const real = await realpath(path).catch(() => path);
+      const grants = project?.policy.readGrants ?? [];
+      if (!project || !grants.includes(real)) throw new Error(`${path} is not a read exception.`);
+      await this.host.updateProjectPolicy(id, {
+        ...project.policy,
+        readGrants: grants.filter((grant) => grant !== real),
+      });
+      this.host.setNotice({ kind: "info", text: `The manager may no longer read ${real}.` });
+    }
+    await this.host.emitState();
+  }
+
+  /** `/checks`: list, add, remove or clear the project's verification commands. */
+  private async checks(input: string): Promise<void> {
+    const id = this.requireProject();
+    const project = (await this.host.getState()).projects.find((item) => item.id === id);
+    if (!project) throw new Error("Open a project first.");
+    const result = checksCommand(project.policy, input.trim().slice("/checks".length));
+    if (result.policy) await this.host.updateProjectPolicy(id, result.policy);
+    this.host.setNotice({ kind: "info", text: result.notice });
+    await this.host.emitState();
+  }
+
+  /** `/project-model [manager|worker] [profile|default]`, bound against what Poundlock serves now. */
+  private async projectModel(input: string): Promise<void> {
+    const id = this.requireProject();
+    const args = input.trim().slice("/project-model".length);
+    // Naming a profile binds against the catalog Poundlock serves now, as /role does.
+    const [, profile] = args.trim().split(/\s+/);
+    const naming = Boolean(profile) && profile !== "default";
+    if (naming) await this.host.refreshServerInfo();
+    const state = await this.host.getState();
+    const project = state.projects.find((item) => item.id === id);
+    if (!project) throw new Error("Open a project first.");
+    if (naming && !state.probe?.ok)
+      throw new Error(`Poundlock is not reachable: ${state.probe?.error ?? "unknown"}`);
+    const catalog = catalogFromProbe({ interactiveModels: state.probe?.interactiveModels ?? [] });
+    const result = projectModelCommand(project.policy, args, catalog);
+    if (result.policy) await this.host.updateProjectPolicy(id, result.policy);
+    this.host.setNotice({ kind: "info", text: result.notice });
+    await this.host.emitState();
+  }
+
+  /** `/fix-rounds [n|default]`: how often a failing task goes back to its worker. */
+  private async fixRounds(input: string): Promise<void> {
+    const { wanted, id, state, project } = await this.projectCommand(input);
+    const result = fixRoundsCommand(project.policy, wanted, state.permissions.fixRoundsPerTask);
+    if (result.policy) await this.host.updateProjectPolicy(id, result.policy);
+    this.host.setNotice({ kind: "info", text: result.notice });
+    await this.host.emitState();
+  }
+
+  /** `/permissions …`: Settings → Permissions, for every project on this computer. */
+  private async permissions(input: string): Promise<void> {
+    const { state, project } = await this.projectCommand(input);
+    const result = permissionsCommand(
+      {
+        settings: state.permissions,
+        projects: state.projects,
+        catalog: catalogFromProbe({ interactiveModels: state.probe?.interactiveModels ?? [] }),
+        project,
+      },
+      input.trim().replace(/^\S+/, ""),
+    );
+    if (result.settings) await this.host.savePermissions(result.settings);
+    this.host.setNotice({ kind: "info", text: result.notice });
+    await this.host.emitState();
+  }
+
+  /** `/ladder …`: Settings → Model ladder. Saving pauses active work, as in the app. */
+  private async ladder(input: string): Promise<void> {
+    const state = await this.host.getState();
+    const catalog = catalogFromProbe({ interactiveModels: state.probe?.interactiveModels ?? [] });
+    const result = ladderCommand(state.connection, catalog, input.trim().replace(/^\S+/, ""));
+    const saved = result.ladder ? await this.host.saveEscalation(result.ladder) : undefined;
+    const paused = saved?.notice?.text;
+    this.host.setNotice({
+      kind: "info",
+      text: paused ? `${result.notice}\n${paused}` : result.notice,
+    });
+    await this.host.emitState();
+  }
+
+  /**
+   * `/local-manager …`: the manager on a model server on this computer. The
+   * token is asked for hidden, as `/connect` asks for its own, and the server
+   * is tested before anything is saved.
+   */
+  private async localManager(input: string): Promise<void> {
+    const saved = (await this.host.getState()).connection.localManager;
+    const parsed = parseLocalManager(input.trim().replace(/^\S+/, ""), saved);
+    if (parsed.action === "show") {
+      this.host.setNotice({ kind: "info", text: localManagerLines(saved) });
+      await this.host.emitState();
+      return;
+    }
+    if (parsed.action === "off") {
+      await this.host.saveLocalManager(localManagerOff(saved));
+      await this.host.emitState();
+      return;
+    }
+    this.prompting = true;
+    let token: string | undefined;
+    try {
+      token = await showPrompt(this.tui, this.colours, {
+        title: "Local server token",
+        detail: [
+          "The token your model server on this computer expects, if any. Stored only on this computer, never shown.",
+          saved?.tokenConfigured ? "Enter keeps the saved token." : "Enter for none.",
+        ],
+        secret: true,
+      });
+    } finally {
+      this.prompting = false;
+    }
+    if (token === undefined) return;
+    const { request } = parsed;
+    this.working = `Testing ${request.url}`;
+    this.paint();
+    try {
+      const probe = await this.host.testLocalManager({
+        url: request.url,
+        model: request.model,
+        token,
+      });
+      await this.host.saveLocalManager(localManagerSettings(request, probe, saved, token));
+    } finally {
+      this.working = undefined;
+    }
+    await this.host.emitState();
+  }
+
+  /** `/accounts …`: Settings → Integrations, with the token asked for hidden. */
+  private async accounts(input: string): Promise<void> {
+    const { integrations } = await this.host.getState();
+    const request = parseAccounts(input.trim().replace(/^\S+/, ""), integrations);
+    if (request.action === "show") {
+      this.host.setNotice({ kind: "info", text: accountLines(integrations) });
+    } else if (request.action === "remove") {
+      await this.host.removeForge(request.kind);
+    } else {
+      this.prompting = true;
+      let token: string | undefined;
+      try {
+        token = await showPrompt(this.tui, this.colours, {
+          title: `${request.title} token`,
+          detail: [
+            TOKEN_HINT[request.kind],
+            "Stored only on this computer, never shown, never sent to Poundlock.",
+            ...(integrations[request.kind]?.configured ? ["Enter keeps the saved token."] : []),
+          ],
+          secret: true,
+        });
+      } finally {
+        this.prompting = false;
+      }
+      if (token === undefined) return;
+      const account = { host: request.host, username: request.username, token };
+      if (request.kind === "github") await this.host.saveGithub(account);
+      else await this.host.saveGitea(account);
+    }
+    await this.host.emitState();
+  }
+
+  /** `/appearance …`: Settings → Appearance. The bell is this client's own; the rest is the host's. */
+  private async appearance(input: string): Promise<void> {
+    const change = parseAppearance(input.trim().replace(/^\S+/, ""), await this.host.getState());
+    const saved = await this.preferences.read();
+    if (change.action === "theme") {
+      await this.host.saveAppearance({ theme: change.theme });
+      this.colours.retheme(change.theme);
+      ensureHighlightTheme(this.colours);
+      // Drawn lines are cached with the old colours.
+      this.tui.invalidate();
+    }
+    if (change.action === "chips")
+      await this.host.saveUiPreferences({ composerInfolets: change.composerInfolets });
+    if (change.action === "notify") await this.preferences.write({ ...saved, bell: change.bell });
+    const bell = change.action === "notify" ? change.bell : saved.bell;
+    this.host.setNotice({ kind: "info", text: appearanceLines(await this.host.getState(), bell) });
+    await this.host.emitState();
+  }
+
+  /** The task `/task` opened, as it stands now. */
+  private renderTask(width: number): string[] {
+    const snapshot = this.state?.snapshot;
+    const task = snapshot?.tasks.find((item) => item.id === this.taskShown?.taskId);
+    if (!snapshot || !task || !this.state)
+      return ["That task is no longer on the board. /chat to return."];
+    const attempt =
+      task.attempts.find((item) => item.number === this.taskShown?.attempt) ?? task.attempts.at(-1);
+    const rounds = fixRoundsPerTask(
+      snapshot.project.policy.fixRoundsPerTask,
+      this.state.permissions.fixRoundsPerTask,
+    );
+    return renderTaskEvidence({ task, attempt }, rounds, width, this.colours);
+  }
+
+  /** `/runtime [node <number|folder|none>]`: Project settings → Node runtime. */
+  private async runtime(input: string): Promise<void> {
+    const { id, project } = await this.projectCommand(input);
+    const args = input.trim().replace(/^\S+/, "");
+    const candidates = await this.host.runtimeCandidates();
+    if (!args.trim()) {
+      this.host.setNotice({ kind: "info", text: runtimeLines(project, candidates) });
+    } else {
+      await this.host.setProjectRuntime(id, "node", runtimeChoice(args, candidates));
+    }
+    await this.host.emitState();
+  }
+
+  /** `/repo-account [github|gitea|none]`: Project settings → repository access. */
+  private async repoAccount(input: string): Promise<void> {
+    const { wanted, id, project } = await this.projectCommand(input);
+    if (!wanted) this.host.setNotice({ kind: "info", text: repoAccountLine(project) });
+    else await this.host.attachForge(id, repoAccountChoice(wanted));
+    await this.host.emitState();
+  }
+
+  /** `/websearch [on|off]`: whether this project's manager and Planner may search the web. */
+  private async webSearch(input: string): Promise<void> {
+    const { wanted, id, state, project } = await this.projectCommand(input);
+    if (wanted === "engine") {
+      // Settings → Connection → Web search: one SearXNG for every project, or none.
+      const [, , url, ...extra] = input.trim().split(/\s+/);
+      if (!url || extra.length) throw new Error(WEB_SEARCH_USAGE);
+      await this.host.saveWebSearch(url === "none" ? null : url);
+      await this.host.emitState();
+      return;
+    }
+    const result = webSearchCommand(project.policy, wanted, state.connection.webSearch?.url);
+    if (result.policy) await this.host.updateProjectPolicy(id, result.policy);
+    this.host.setNotice({ kind: "info", text: result.notice });
+    await this.host.emitState();
+  }
+
+  /** `/transcript [normal|verbose]`: how much of the work the conversation shows. */
+  private async transcriptDensity(input: string): Promise<void> {
+    const [, wanted] = input.trim().split(/\s+/);
+    if (wanted !== undefined && !isTranscriptDensity(wanted))
+      throw new Error("Usage: /transcript [normal|verbose]");
+    if (wanted && wanted !== this.density) {
+      await this.preferences.write({
+        ...(await this.preferences.read()),
+        transcriptDensity: wanted,
+      });
+      this.density = wanted;
+    }
+    this.host.setNotice({ kind: "info", text: `Transcript: ${TRANSCRIPT_DENSITY[this.density]}` });
+    await this.host.emitState();
   }
 
   /**
@@ -1095,11 +1617,7 @@ export class TuiApp {
    * back to the Manager default.
    */
   private async reasoning(input: string): Promise<void> {
-    const [, wanted] = input.trim().split(/\s+/);
-    const id = this.requireProject();
-    const state = await this.host.getState();
-    const project = state.projects.find((item) => item.id === id);
-    if (!project) throw new Error("Open a project first.");
+    const { wanted, id, state, project } = await this.projectCommand(input);
     const view = conversationReasoningView({
       project,
       roles: state.connection.roles,
@@ -1155,11 +1673,7 @@ export class TuiApp {
    * `default` goes back to the machine-wide setting.
    */
   private async trust(input: string): Promise<void> {
-    const [, wanted] = input.trim().split(/\s+/);
-    const id = this.requireProject();
-    const state = await this.host.getState();
-    const project = state.projects.find((item) => item.id === id);
-    if (!project) throw new Error("Open a project first.");
+    const { wanted, id, state, project } = await this.projectCommand(input);
     const describe = (override: ToolTrustMode | undefined) =>
       `${toolTrustLabel(effectiveToolTrust(override, state.permissions))} (${
         override ? "this project" : "machine default"
@@ -1193,11 +1707,7 @@ export class TuiApp {
    * argument, shows the four settings with the current one named.
    */
   private async network(input: string): Promise<void> {
-    const [, wanted] = input.trim().split(/\s+/);
-    const id = this.requireProject();
-    const state = await this.host.getState();
-    const project = state.projects.find((item) => item.id === id);
-    if (!project) throw new Error("Open a project first.");
+    const { wanted, id, project } = await this.projectCommand(input);
     if (!wanted) {
       const current = describeReach(projectReach(project.policy));
       const items: SelectItem[] = Object.entries(NETWORK_CHOICES).map(([value, reach]) => ({
@@ -1224,6 +1734,16 @@ export class TuiApp {
     });
     this.host.setNotice({ kind: "info", text: `Network: ${describeReach(reach)}.` });
     await this.host.emitState();
+  }
+
+  /** A project command's argument, with the open project and the state it was read from. */
+  private async projectCommand(input: string) {
+    const [, wanted] = input.trim().split(/\s+/);
+    const id = this.requireProject();
+    const state = await this.host.getState();
+    const project = state.projects.find((item) => item.id === id);
+    if (!project) throw new Error("Open a project first.");
+    return { wanted, id, state, project };
   }
 
   private requireProject(): string {
@@ -1280,28 +1800,43 @@ export class TuiApp {
    * to. Without this a terminal-only user could not see the profile names
    * `/role` takes, let alone choose between them.
    */
-  private async listModels(): Promise<void> {
+  private async listModels(input: string): Promise<void> {
     await this.host.refreshServerInfo();
     const state = await this.host.getState();
     if (!state.probe?.ok)
       throw new Error(`Poundlock is not reachable: ${state.probe?.error ?? "unknown"}`);
     const catalog = catalogFromProbe({ interactiveModels: state.probe.interactiveModels ?? [] });
     if (!catalog.length) throw new Error("Poundlock is serving no model profiles.");
-    const bound = new Map(
-      Object.entries(state.connection.roles ?? {})
-        .filter(([, binding]) => binding)
-        .map(([role, binding]) => [`${binding!.profileId}`, role]),
-    );
+    const wanted = input.trim().slice("/models".length).trim();
+    if (wanted) {
+      // `<profile> destination <own|external|reported>`: Models and routing's override.
+      const override = /^(.+?)\s+destination(?:\s+(\S+))?$/.exec(wanted);
+      const profile = matchProfile(catalog, override?.[1] ?? wanted);
+      const id = profile.profileId ?? profile.id;
+      if (override) {
+        if (!override[2]) throw new Error(DESTINATION_USAGE);
+        const saved = await this.host.saveProfile(id, {
+          ...state.connection.profiles?.[id],
+          approvedDestination: destinationOverride(override[2]),
+        });
+        state.connection = saved.connection;
+      }
+      this.host.setNotice({
+        kind: "info",
+        text: modelDetailLines(profile, state.connection.profiles?.[id]?.approvedDestination).join(
+          "\n",
+        ),
+      });
+      await this.host.emitState();
+      return;
+    }
     const lines = [
       "Model profiles Poundlock is serving:",
-      ...catalog.map((profile) => {
-        const role = bound.get(profile.profileId ?? profile.id);
-        const where = profile.dataDestination ?? "unknown";
-        return `  ${profile.name.padEnd(24)}${where.padEnd(18)}${role ? `← ${role}` : ""}`;
-      }),
+      ...modelListRows(catalog, state.connection.roles ?? {}),
       "",
       `Roles: ${EXECUTION_ROLES.join(", ")}. Bind one with /role <role> <profile>.`,
       "Changing a role ends the current manager session and needs /approve-models.",
+      "/models <profile> says more about one.",
     ];
     this.host.setNotice({ kind: "info", text: lines.join("\n") });
     await this.host.emitState();
@@ -1342,23 +1877,19 @@ export class TuiApp {
           description: reason ? `${destination} — unavailable: ${reason}` : destination,
         };
       });
+      // Highlighted: the current binding, else the app's setup suggestion.
+      const suggested = { ...guessRoleMap(state.probe), ...state.connection.roles }[
+        role as ExecutionRole
+      ];
       const picked = await showPicker(this.tui, this.colours, items, {
         title: `Model for the ${role} role`,
+        initial: suggested?.profileId,
       });
       if (picked) await this.setRole(`/role ${role} ${picked.value}`);
       return;
     }
 
-    const matches = catalog.filter(
-      (profile) =>
-        profile.name === wanted ||
-        profile.profileId === wanted ||
-        profile.id === wanted ||
-        profile.aliases.includes(wanted),
-    );
-    if (!matches.length)
-      throw new Error(`No profile named ${wanted}. Run /models to see what is being served.`);
-    const [chosen] = matches;
+    const chosen = matchProfile(catalog, wanted);
     // The same check the desktop picker applies. Without it the terminal
     // saved a binding the first turn would then refuse — a blocked
     // destination, an autocomplete model as manager — with the error arriving

@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { createFolderProject } from "@core/projects";
 import { FileStore } from "@core/store";
@@ -38,9 +38,6 @@ it("keeps both processes' saves of different projects", async () => {
     "renamed by the app",
     "renamed by the runner",
   ]);
-  // The legacy index is still written for older clients.
-  const index = JSON.parse(await readFile(first.layout.projectsIndex, "utf8")) as unknown[];
-  expect(index).toHaveLength(2);
 });
 
 it("never turns an id from a caller into a path outside the project data", async () => {

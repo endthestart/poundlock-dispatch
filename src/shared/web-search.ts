@@ -52,7 +52,7 @@ export interface WebSearchResult {
 
 /** One search or fetch, as a run or a session records it. */
 export interface WebCallRecord {
-  tool: "web_search" | "web_fetch";
+  tool: "web_search" | "github_search" | "web_fetch";
   /** The query, or the URL fetched. */
   target: string;
   /** "ok", or why it did not happen or failed. */

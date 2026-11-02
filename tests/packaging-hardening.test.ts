@@ -73,8 +73,6 @@ describe("Git askpass helper", () => {
     // No global Git configuration or credential helper of this machine's.
     process.env.HOME = join(root, "home");
     await mkdir(process.env.HOME);
-    const saved = process.env.POUNDLOCK_DISPATCH_GIT_ASKPASS;
-    delete process.env.POUNDLOCK_DISPATCH_GIT_ASKPASS;
     const seen: string[] = [];
     const server = createServer((request, response) => {
       seen.push(request.headers.authorization ?? "");
@@ -93,7 +91,6 @@ describe("Git askpass helper", () => {
       ).rejects.toThrow();
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
-      if (saved !== undefined) process.env.POUNDLOCK_DISPATCH_GIT_ASKPASS = saved;
     }
     expect(existsSync(marker)).toBe(false);
     expect(seen).toContain(`Basic ${Buffer.from("reader:synthetic-token").toString("base64")}`);

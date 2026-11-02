@@ -1,7 +1,14 @@
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { INFERENCE_PERMISSION_PROBE_MODEL } from "@core/poundlock";
 
 /** One chat request as the fake controller received it. */
+/** The features this Dispatch requires, so the fake passes the connection test's check. */
+const COMPAT = JSON.parse(
+  readFileSync(new URL("../../compat/poundlock.json", import.meta.url), "utf8"),
+) as { required_features: string[] };
+
 export interface ChatRequest {
   model: string;
   messages: Array<{ role: string; content?: unknown; tool_calls?: unknown[] }>;
@@ -67,6 +74,9 @@ export async function fakePoundlock(options: FakePoundlockOptions) {
   };
   const server = createServer(async (req, res) => {
     const text = await body(req);
+    // Readiness is public, as on the controller, so a connection test can probe it.
+    if (req.method === "GET" && (req.url ?? "") === "/readyz")
+      return json(res, 200, { status: "ready", version: "0.2.1" });
     if (req.headers.authorization !== `Bearer ${token}`)
       return json(res, 401, { error: { code: "unauthorized", message: "bad token" } });
     const path = (req.url ?? "").split("?")[0];
@@ -91,8 +101,17 @@ export async function fakePoundlock(options: FakePoundlockOptions) {
     }
     if (req.method === "GET" && path === "/api/v1/capabilities") {
       counts.capabilities++;
-      return json(res, 200, { api_major: 1, contract_revision: 4, features: ["access_preflight"] });
+      return json(res, 200, {
+        api_major: 1,
+        contract_revision: 4,
+        features: COMPAT.required_features,
+      });
     }
+    // An application token without job permissions, as Dispatch's own token is.
+    if (req.method === "GET" && path === "/api/v1/job-options")
+      return json(res, 403, { error: { message: "jobs:read permission required" } });
+    if (req.method === "GET" && path === "/api/v1/usage")
+      return json(res, 200, { managed_identities: [] });
     if (req.method === "POST" && path === "/api/v1/access/preflight") {
       counts.preflight++;
       return json(res, 200, {
@@ -104,6 +123,11 @@ export async function fakePoundlock(options: FakePoundlockOptions) {
     }
     if (req.method === "POST" && path === "/v1/chat/completions") {
       const request = JSON.parse(text) as ChatRequest;
+      // The connection test's permission probe names no model.
+      if (request.model === INFERENCE_PERMISSION_PROBE_MODEL)
+        return json(res, 404, {
+          error: { code: "unknown_model_profile", message: "no such model" },
+        });
       requests.push(request);
       const turn = await options.respond(request, chats++);
       if (turn.delay) await turn.delay;

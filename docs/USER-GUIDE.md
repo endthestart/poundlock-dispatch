@@ -6,7 +6,8 @@ reviews the result; **workers** write the code in your project folder. Nothing i
 committed or pushed for you.
 
 The desktop app and the `dispatch` terminal client do the same work and share the
-connection, model choices and permission defaults. Their project lists are separate.
+projects and their history, the connection, model choices and permission defaults: a
+folder opened in one appears in the other.
 
 ## Start a project
 
@@ -32,6 +33,10 @@ it more room with `/retry`, or continue past a stop with `/override`.
 
 Each task's result is checked by running the project's checks, and the Manager reviews
 the change before accepting it. A worker saying "done" is never enough.
+
+The **Transcript** chip beside the composer sets how much of the work the conversation
+shows. **Normal** folds each reply's tool steps and keeps one update between messages;
+**Verbose** opens every step and update.
 
 **Project → New conversation** gives the Manager a fresh start and moves the old
 conversation to History. **Project → Start a new run** keeps the conversation and
@@ -107,30 +112,143 @@ conversation you read is never changed. **Project → Compact conversation** or
 | `/trust`, `/network` | This project's permissions and network. |
 | `/models`, `/role` | Which models do what. |
 | `/compact` | Summarise older context now. |
+| `/autopilot` | Build the approved plan unattended ([Autopilot](#autopilot)). |
 | `/connect`, `/setup` | The controller and token; what is configured. |
 | `/quit` | Exit. |
 
-`dispatch jobs …` drives Poundlock jobs by hand from a shell, and `dispatch auto …` runs auto
-mode. Each has `--help`.
+`dispatch jobs …` drives Poundlock jobs by hand from a shell, and `dispatch autopilot …` runs
+Autopilot. Each has `--help`.
 
-## Auto mode
+## Autopilot
 
-Auto mode works an approved plan unattended, for hours, in a private clone of the
-folder. Every command runs in a container on a dedicated VM ([install](INSTALL.md#auto-modes-vm-optional)),
-and a case is accepted when the plan's checks pass and its changes stay inside the
-plan's scope.
+Autopilot builds an approved plan unattended, for hours, in a private copy of the
+folder. Every command runs in a container on a dedicated VM
+([install](INSTALL.md#autopilots-vm-optional)). A task is accepted only when the
+plan's checks pass and its changes stay inside the plan's scope: that is **verified**.
+Then the Planner reads the code and its tests and gives each requirement a verdict:
+**shown**, **partly** or **not shown**. A run keeps going when you quit the app or the
+terminal, and survives a crash or a reboot.
+
+**Desktop:** a folder project with a plan offers **Build with Autopilot…**.
+- Choose the toolchain image, a time limit and any setup commands.
+- Confirm the checks: the manager suggests them with the plan, and they become the
+  project's checks.
+- A Planner outside your network needs your consent and a spend cap.
+- A plan still waiting for approval is approved and built in one step.
+
+The run card shows how it stands, time and Planner spend against their limits, what the
+manager and the Planner cost across all projects in the last 7 days, a chip per
+requirement (green shown, amber partly, red not shown, grey not reviewed yet), what it
+is doing now, and once it ends, what needs you and what was built. Run ids, checkpoints
+and the container are under **Details**. With desktop notifications on, you get one
+alert when a run stops building.
+
+| The card says | What to do |
+|---|---|
+| Building | Nothing. **Message Autopilot** to tell it something; **Stop after this task** or **Stop now** if you must |
+| Paused | Its runner stopped (a quit app, a reboot): **Resume** |
+| Needs you | Read **Needs you**; answer in the conversation, then **Resume** |
+| Built, *n* gaps | Read the red and amber chips; **Build again…** to close them, or merge what is verified |
+| Built, not reviewed | Every task passed its checks but no Planner judged the requirements: read the work before you rely on it |
+| Built | **Merge into folder…** fast-forwards your branch to the last verified commit |
+| Stopped, Nothing verified | Read the report (**Open report**), then decide |
+
+**Message Autopilot**, or anything you type while a run builds, goes to the run: the
+worker on the current task hears it before its next step, and every later task and the
+Planner's next milestone plan or review read it. To change the plan itself, stop the run
+and talk to the manager.
+
+If a run stops before it starts because a container could reach this Mac, apply the VM
+firewall command the message gives, then start again. **Export patch…** saves the
+verified work as a patch. The app runs Autopilot through the `dispatch` command, which
+must be installed from the same release.
+
+**Terminal:** `/autopilot` works the open folder and shows a card while the run works.
+From a shell:
 
 ```sh
-dispatch auto start --dir . --image python:3.14-slim --plan plan.json
-dispatch auto watch            # Ctrl+C leaves it running
-dispatch auto stop [--now]
-dispatch auto resume
-dispatch auto export --out run.patch
+dispatch autopilot start --dir . --image python:3.14-slim --plan plan.json
+dispatch autopilot watch --dir .    # Ctrl+C leaves it running
+dispatch autopilot message --dir . --text "Keep the database code in src/lib/server."
+dispatch autopilot stop --dir . [--now]
+dispatch autopilot resume --dir .
+dispatch autopilot export --dir . --out run.patch
 ```
 
-Nobody reviews auto mode's work, so its results say **verified, not reviewed**. Read the
-exported patch before you apply it. A run survives a crash or a reboot; `resume` picks
-it up where it stopped.
+Without a run id they act on the folder's newest run. `dispatch autopilot --help` lists
+the options and limits; `resume` picks a run up where it stopped. Read the exported patch or the merged commits before you build on them.
+`dispatch auto` and `/auto` still work for one more release.
+
+## Building a product on your own
+
+The order that works, learned from the benchmark runs.
+
+**Once:**
+- In Settings → Models and routing, choose a Manager and a Planner with a long output limit,
+  a Worker, and a local fallback for each cloud role. A provider that refuses for money
+  moves that role to its fallback, and the card says so.
+- Autopilot caps the Planner's spend per run. Set any total limit with your provider
+  itself; the card's **Last 7 days** shows what the Manager and the Planner cost.
+- Install Autopilot's VM with its firewall, and a container image with the project's
+  toolchain.
+- Turn on desktop notifications, so a run that stops building reaches you.
+- Where the product depends on outside facts (formulas, file formats, an API, a standard),
+  turn on the project's **Web search for the manager and Planner**. The Planner then reads
+  the sources and saves excerpts for the workers, who stay offline; the run's report lists
+  what it read.
+
+**1. Agree the spec.**
+- Answer every question, and raise what it didn't ask about: scale, memory, bad input,
+  how the product is run.
+- Ask for scenarios with known answers, such as "a star on the celestial equator seen from
+  30° N transits at 60°". The Planner judges each requirement by them.
+- When the plan review says revise and the Manager doesn't, ask it to. Correct any choice it
+  made for you that you would make differently.
+- Approve an investigation's first command promptly: it waits for you, and the approval
+  covers that investigation's other commands.
+- Keep one test of your own outside the project, such as running the product on real input
+  and looking at the result. Autopilot never sees it, so the work can't be shaped to pass it.
+
+**2. Build.** **Build with Autopilot…**, with the image, a time limit, setup commands, and
+downloads if the project installs packages. Merge or drop the previous run first.
+
+**3. While it builds, leave it.** Tasks fail and are retried. A task's first attempt gets two
+thirds of its time, so a repair can follow; one that still runs out of time is abandoned,
+and the Planner replans it at the next milestone review. With a frontier Planner, each
+feature's acceptance test is the Planner's, written from your scenarios before the code, and
+no worker can change it. Look in when an
+alert arrives, or once or twice a day. If **Details** shows the same failure in several
+tasks, tell Autopilot the rule once with **Message Autopilot**: where the code belongs,
+which library to use, what never to do. Don't edit the project folder while a run builds.
+
+**4. When it stops,** the card says why, and the task reasons are under **Details**:
+
+| It says | What to do |
+|---|---|
+| Paused (its runner stopped) | **Resume** |
+| Poundlock or the model stayed unavailable | In Poundlock's console, check the machine that serves the model under **Machines**: wake it or restart its model server, then **Resume** |
+| The container runtime stayed unavailable | Start Autopilot's VM again, then **Resume** |
+| Setup failed, or the checks fail at the base commit | Read the log it names, fix the project or the flaky check, then **Build again…** |
+| *M* is done; Autopilot waits for you | Read the milestone's chips, then **Resume** |
+| *M* still has gaps after *n* reviews | **Message Autopilot** what you want and **Resume**, or merge what is verified and **Build again…** |
+| 3 cases in a row were blocked or abandoned | Read their reasons: usually one trap. **Message Autopilot** the rule, then **Resume** |
+| A task blocked in the worker's own words | Its question is on the card. Type your answer (it goes to the run), then **Resume**; if the worker is wrong, say so |
+| A time or Planner spend limit | **Merge into folder…**, then **Build again…** if more is needed |
+| On local fallback | Raise your provider's limit or top up; the run goes on locally meanwhile |
+| The disk is nearly full | Free space on this Mac, then **Resume** |
+| A container in this VM can reach this Mac | Run the command it gives, then **Build again…** |
+| The route of a model changed | Review the route in Settings → Models and routing, then start a new run |
+
+In the terminal client the buttons are commands: **Resume** is `/autopilot resume`, **Build
+again…** is `/autopilot start --image <name>`, **Message Autopilot** is typing while the run
+holds the project (or `/autopilot message <words>`), and **Merge into folder…** is
+`/autopilot merge`. From a shell, the same commands follow `dispatch autopilot` (`message
+--text <words>`, `merge --yes`). Models and routing is `/models`, `/role` and `/approve-models`.
+
+**5. When it's built,** read the chips, then run your own test. If the product is wrong
+though every check passes, tell the Manager what you saw, as a user would ("the stars come
+out smeared"), and **Build again…**. Always use **Merge into folder…** before the next
+build.
 
 ## When something goes wrong
 

@@ -42,7 +42,7 @@ it("reports a compaction Pi runs on its own, with what it replaced and what it k
   await withManager(
     // Every reply reports a nearly full window, so Pi compacts after each turn.
     // Leave headroom over the system prompt and kept turns, which Pi estimates.
-    { ...SMALL, usage: () => 7500 },
+    { ...SMALL, usage: () => 8000 },
     async ({ manager, project, folder, requests }) => {
       const seen = listeners();
       for (const marker of ["one", "two", "three", "four"])

@@ -1,6 +1,14 @@
 import { lstat, mkdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import type { AutoCase, AutoLimits, AutoOutcome, AutoRunState } from "@shared/auto-run";
+import {
+  type AutoCase,
+  type AutoLimits,
+  type AutoOutcome,
+  type AutoRunState,
+  FIRST_ATTEMPT_ENDED,
+  OUT_OF_TIME,
+  stoppedForTime,
+} from "@shared/auto-run";
 import { freezable, isTestFile } from "../frozen-tests";
 import {
   applyMutant,
@@ -11,6 +19,7 @@ import {
   survivorsForWorker,
 } from "../mutation-check";
 import { keepSnapshots } from "../snapshots";
+import { acceptanceDrift, placeAcceptanceTests } from "./acceptance";
 import { nextCase, oneLine, validateCases } from "./cases";
 import {
   changedPaths,
@@ -32,11 +41,7 @@ import {
 } from "./environment";
 import type { AutoLedger } from "./ledger";
 import { caseBudgetMs, checkLimits } from "./limits";
-import {
-  clearPendingMutation,
-  restorePendingMutation,
-  writePendingMutation,
-} from "./pending-mutation";
+import { putBackMutation, restorePendingMutation, writePendingMutation } from "./pending-mutation";
 import type {
   AutoPreparePort,
   AutoVerifierPort,
@@ -50,6 +55,7 @@ import {
   isNestedRepository,
   isSubstantive,
   meaningfulChanges,
+  runsOnHost,
   scopeViolations,
   under,
 } from "./scope";
@@ -130,6 +136,16 @@ export interface AutoRunSpec {
 /** The report-finalization window after a case's time runs out on verified work. */
 export const FINALIZE_MS = 5 * 60_000;
 
+/** The share of a case's allowance a repair attempt needs left to start. */
+const MIN_REPAIR_SHARE = 0.1;
+
+/**
+ * The share of a case's allowance its first attempt may use, so its checks and a repair still
+ * fit: 12 of the 15 cases abandoned on time in October spent 80 of 90 minutes or more on their
+ * first attempt and never had a repair, while 90% of accepted cases finished it within 51.
+ */
+const FIRST_ATTEMPT_SHARE = 2 / 3;
+
 /** About fifteen minutes of back-off before a missing Poundlock ends the run. */
 export const INFERENCE_WAITS_MS = [30_000, 60_000, 120_000, 240_000, 480_000];
 
@@ -156,15 +172,23 @@ export class AutoRunEngine {
   private readonly clock: () => Date;
   private stopNow = false;
   private stopAfterCase = false;
+  /** Why the runner itself asked to stop, when it was not the owner. */
+  private stopReason: string | undefined;
   private learnings: string[] = [];
   /** A note for the attempt that picks up after an interruption. */
   private resumeNote: { caseId: string; text: string } | undefined;
   /** Frozen tests the Planner let the rest of the run change, with why. */
   private allowedFrozen = new Map<string, string>();
+  /** Each case's frozen tests already put to the Planner, as "case path". */
+  private askedFrozen = new Set<string>();
   /** The run's cases: those it started with, then any that joined. */
   private cases: AutoCase[] = [];
   /** Inbox entries already taken, so each is acted on once across polls and resumes. */
   private inboxTaken: Set<string> | undefined;
+  /** What the owner told the run, oldest first: every later attempt reads it. */
+  private ownerNotes: string[] = [];
+  /** Passes a message from the owner to the attempt running now, while one is. */
+  private toWorker: ((text: string) => void) | undefined;
   /** Frozen test files: the project's, plus what tests-first cases in this run wrote. */
   private frozen = new Set<string>();
 
@@ -213,6 +237,8 @@ export class AutoRunEngine {
   /** Continue after a crash or a stop: an unfinished attempt is closed as interrupted, its work saved. */
   async resume(): Promise<AutoOutcome> {
     const entries = await this.deps.ledger.read();
+    // What earlier cases learned outlives the runner: both lanes lost theirs to a restart (28 Oct).
+    this.learnings = entries.flatMap(({ event }) => (event.type === "learned" ? event.texts : []));
     const started = entries.find((e) => e.event.type === "run_started")?.event;
     if (!started || started.type !== "run_started")
       throw new Error("This run has no start record.");
@@ -279,12 +305,12 @@ export class AutoRunEngine {
         answer = await this.deps.whenIdle!(state, stop.signal);
       } catch (error) {
         if (this.stopNow)
-          return { end: { outcome: "cancelled_after_checkpoint", reason: "stopped by the owner" } };
+          return { end: { outcome: "cancelled_after_checkpoint", reason: this.stoppedReason() } };
         const reason = error instanceof Error ? error.message : String(error);
         return { end: { outcome: "blocked_for_input", reason: `planning stopped: ${reason}` } };
       }
       if (this.stopNow)
-        return { end: { outcome: "cancelled_after_checkpoint", reason: "stopped by the owner" } };
+        return { end: { outcome: "cancelled_after_checkpoint", reason: this.stoppedReason() } };
       if (!("cases" in answer)) return answer;
       const known = new Set(this.cases.map((item) => item.id));
       const fresh = answer.cases.filter((item) => !known.has(item.id));
@@ -321,10 +347,10 @@ export class AutoRunEngine {
 
   private async preflightSteps(signal: AbortSignal): Promise<Ending | undefined> {
     const { ledger, repo, verifier, preparer } = this.deps;
-    const stopped: Ending = {
+    const stopped = (): Ending => ({
       outcome: "cancelled_after_checkpoint",
-      reason: "stopped by the owner",
-    };
+      reason: this.stoppedReason(),
+    });
     if (preparer) {
       this.deps.onActivity?.("preparing the container");
       // What setup adds is the environment, a setup cut short by a crash included.
@@ -332,7 +358,7 @@ export class AutoRunEngine {
       // it once had a worker's new test excluded from its commit.
       const before = new Set(await untrackedTopPaths(repo));
       const prepared = await preparer.prepare(signal);
-      if (this.stopNow) return stopped;
+      if (this.stopNow) return stopped();
       const created = (await untrackedTopPaths(repo)).filter((path) => !before.has(path));
       await excludeFromRun(this.deps.mirror, created);
       await this.writeLog("preflight-prepare.log", prepared);
@@ -361,13 +387,16 @@ export class AutoRunEngine {
     }
     this.deps.onActivity?.("running the checks at the base commit");
     let checks = await verifier.verify(repo.worktree, signal);
-    if (this.stopNow) return stopped;
-    // A frozen test that failed at random at the start sent a run to plan a
-    // repair of nothing: the start runs it once more, as a case does.
-    const flaky = checks.passed ? [] : failingFrozenTests(checks, this.frozen);
-    if (flaky.length) {
+    if (this.stopNow) return stopped();
+    // At the base commit no worker has changed anything, so any failure is run once
+    // more: a frozen test and then browser tests under load failed at random there
+    // and ended runs before they began.
+    const flaky = checks.passed
+      ? []
+      : [...new Set([...failingFrozenTests(checks, this.frozen), ...failingTests(checks)])];
+    if (!checks.passed) {
       checks = await verifier.verify(repo.worktree, signal);
-      if (this.stopNow) return stopped;
+      if (this.stopNow) return stopped();
       await ledger.append({ type: "checks_rerun", tests: flaky, passed: checks.passed });
     }
     await this.writeLog("preflight-checks.log", checks);
@@ -546,7 +575,7 @@ export class AutoRunEngine {
       if (this.stopNow || this.stopAfterCase) {
         return this.end(state, {
           outcome: "cancelled_after_checkpoint",
-          reason: this.stopNow ? "stopped by the owner" : "stopped after the case, as asked",
+          reason: this.stoppedReason(),
         });
       }
       const next = nextCase(this.cases, state);
@@ -586,7 +615,33 @@ export class AutoRunEngine {
     }
   }
 
+  /**
+   * A case's acceptance tests are frozen while it runs, and for the rest of the
+   * run once a checkpoint holds them: the case was accepted, or kept verified
+   * progress. Otherwise the reset removed them, and they are not the project's.
+   */
   private async runCase(
+    planned: AutoCase,
+    limits: AutoLimits,
+    stateAtStart: AutoRunState,
+  ): Promise<Ending | undefined> {
+    const paths = (planned.acceptanceTests ?? []).map((test) => test.path);
+    for (const path of paths) this.frozen.add(path);
+    try {
+      return await this.runCaseSteps(planned, limits, stateAtStart);
+    } finally {
+      if (paths.length && !this.stopNow) {
+        const kept = (await this.deps.repo.output(["ls-files", "--", ...paths]))
+          .split("\n")
+          .filter(Boolean);
+        for (const path of paths) if (!kept.includes(path)) this.frozen.delete(path);
+        if (kept.length)
+          await this.deps.ledger.append({ type: "frozen", caseId: planned.id, paths: kept });
+      }
+    }
+  }
+
+  private async runCaseSteps(
     planned: AutoCase,
     limits: AutoLimits,
     stateAtStart: AutoRunState,
@@ -612,20 +667,39 @@ export class AutoRunEngine {
       if (existing.length)
         findings = `${existing.join(", ")} already exist${existing.length > 1 ? "" : "s"}. Read ${existing.length > 1 ? "them" : "it"} first. If the code and its tests already do what the acceptance criteria ask, change nothing and call finish_case done, naming the tests that show it; otherwise add only what is missing.`;
     }
+    // The Planner's time on frozen tests is not the case's either: a task passed its
+    // checks with 49 minutes left and lost them to a 50-minute decision.
+    const askAboutFrozen = async (failure: string, tests: string[]) => {
+      const from = this.clock().getTime();
+      try {
+        return await this.askAboutFrozen(item, failure, tests);
+      } finally {
+        caseStartedAt = new Date(caseStartedAt.getTime() + (this.clock().getTime() - from));
+      }
+    };
     let unavailable = 0;
     for (;;) {
       const state = await ledger.state();
       const budget = caseBudgetMs(state, limits, caseStartedAt, this.clock());
       // At the hard limit the run ends with the worktree as it is (drafts saved), so a resume can finish the case.
       if (this.stopNow || checkLimits(state, limits, this.clock())?.level === "hard") return;
-      if (budget <= 0) {
+      // A repair needs time to read the failure and act: a third
+      // attempt started with 4 of 90 minutes left and could only report.
+      if (budget <= 0 || (attempt > 1 && budget < limits.caseMinutes * 60_000 * MIN_REPAIR_SHARE)) {
         await this.giveUp(item.id, attempt - 1, `case allowance of ${limits.caseMinutes} min used`);
+        return;
+      }
+      const unplaced = await this.placeAcceptance(item);
+      if (unplaced) {
+        await this.giveUp(item.id, attempt - 1, unplaced);
         return;
       }
       this.deps.onActivity?.(`${item.title}: attempt ${attempt}`);
       await ledger.append({ type: "attempt_started", caseId: item.id, attempt, sessionKey });
       const started = this.clock();
       const deadline = new Date(started.getTime() + budget);
+      const share = limits.caseMinutes * 60_000 * FIRST_ATTEMPT_SHARE;
+      const capped = attempt === 1 && limits.maxRepairsPerCase > 0 && share < budget;
       const hardEnd = state.startedAt
         ? Date.parse(state.startedAt) + limits.hardHours * 3_600_000
         : Number.POSITIVE_INFINITY;
@@ -636,9 +710,10 @@ export class AutoRunEngine {
         sessionKey,
         fresh,
         findings,
-        deadline,
+        capped ? new Date(started.getTime() + share) : deadline,
         false,
         waited,
+        capped ? FIRST_ATTEMPT_ENDED : OUT_OF_TIME,
       );
       // Waits for a model other work held (another project's jobs, say) are not the case's time.
       caseStartedAt = new Date(caseStartedAt.getTime() + waited.ms);
@@ -661,7 +736,7 @@ export class AutoRunEngine {
         interruptedActions: result.interruptedActions,
         minutes: Math.round((this.clock().getTime() - started.getTime()) / 6000) / 10,
       });
-      if (result.learnings?.length) this.learnings.push(...result.learnings);
+      if (result.learnings?.length) await this.learn(...result.learnings);
       await keepSnapshots(
         this.deps.repo.worktree,
         join(this.deps.ledger.runDir, "attempts", `${item.id}-${attempt}`),
@@ -731,7 +806,7 @@ export class AutoRunEngine {
         }
         const inTheWay = this.frozenNamed(said);
         if (inTheWay.length) {
-          const allowed = await this.askAboutFrozen(item, said, inTheWay);
+          const allowed = await askAboutFrozen(said, inTheWay);
           if (allowed.length) {
             item = this.withAllowedFrozen(item);
             await ledger.append({
@@ -754,7 +829,16 @@ export class AutoRunEngine {
           // A real defect outside the case's files is a fair blocker: told only
           // to finish, a worker wrote a test pinning the defect
           // it had found, and that test was frozen.
-          findings = `You reported this case blocked: "${said}". Nobody can answer during this run, so blocked is only for what a person must provide (a credential, a decision the plan does not make, access Dispatch does not grant) or for a defect in code this case may not change. Nothing else stops you: there is no turn or context limit you have reached. Continue the case and finish it. If you are really blocked, call finish_case blocked again and say exactly what, with the evidence; never make the checks pass with a test that asserts the defect.`;
+          // A local worker twice called its own new test, wrong by a sign, a
+          // blocker for "a person" to fix, because nothing said it was its own.
+          const own = meaningfulChanges(
+            await changedPaths(this.deps.repo),
+            (await ledger.state()).environmentPaths,
+          ).filter((path) => !this.frozen.has(path));
+          const yours = own.length
+            ? ` This case's own changes are not that: ${own.join(", ")}. A test among them that expects the wrong result is this case's mistake, so correct the test or the code, whichever is wrong.`
+            : "";
+          findings = `You reported this case blocked: "${said}". Nobody can answer during this run, so blocked is only for what a person must provide (a credential, a decision the plan does not make, access Dispatch does not grant) or for a defect in code this case may not change.${yours} Nothing else stops you: there is no turn or context limit you have reached. Continue the case and finish it. If you are really blocked, call finish_case blocked again and say exactly what, with the evidence; never make the checks pass with a test that asserts the defect.`;
           attempt++;
           continue;
         }
@@ -768,7 +852,7 @@ export class AutoRunEngine {
       const cleaned = await this.removeEnvironmentAdditions();
       if (cleaned.length) {
         await ledger.append({ type: "environment_cleaned", caseId: item.id, paths: cleaned });
-        this.learnings.push(
+        await this.learn(
           `Dispatch removed files added inside the prepared environment (${cleaned.join(", ")}); keep scratch files under /tmp.`,
         );
       }
@@ -778,7 +862,7 @@ export class AutoRunEngine {
       // so the patch cannot help them. Without downloads the refusal stands.
       const tampered = await this.environmentViolations((await ledger.state()).environmentPaths);
       if (tampered.length && (await this.restoreEnvironment(item.id, tampered)))
-        this.learnings.push(
+        await this.learn(
           `Dispatch rebuilt the prepared environment because ${tampered.join(", ")} had been changed. Never edit dependencies; fix the project's own code.`,
         );
       let verification = await this.verifyOrWait(item.id, attempt);
@@ -812,20 +896,26 @@ export class AutoRunEngine {
       });
       const environmentPaths = (await ledger.state()).environmentPaths;
       const changed = meaningfulChanges(await changedPaths(this.deps.repo), environmentPaths);
+      // The case's acceptance tests are new to the worktree: only a change to one counts.
+      const drift = await acceptanceDrift(this.deps.repo.worktree, item.acceptanceTests ?? []);
+      const intact = new Set(
+        (item.acceptanceTests ?? []).map((test) => test.path).filter((p) => !drift.includes(p)),
+      );
+      const touched = [...new Set([...changed.filter((path) => !intact.has(path)), ...drift])];
+      // One task gave a shared struct the translation its
+      // criteria asked for, updated a frozen helper's initializers to compile,
+      // and was abandoned with every check passing: the Planner decides at once.
+      const edited = verification.passed ? this.frozenEdits(item, touched) : [];
+      if (edited.length) {
+        const diff = (await this.deps.repo.run(["diff", "--", ...edited])).stdout;
+        const failure = `Its change passes every check and edits these frozen tests:\n${diff.slice(0, 900)}\nWorker's summary: ${result.summary ?? ""}`;
+        if ((await askAboutFrozen(failure, edited)).length) item = this.withAllowedFrozen(item);
+      }
       const violations = [
         ...scopeViolations(changed, this.deps.scope ?? {}, item.writable),
         ...(await this.environmentViolations(environmentPaths)),
         ...(await linksOutside(this.deps.repo.worktree, changed)),
-        ...(item.changesFrozenTests && !item.frozenTestsToChange?.length
-          ? []
-          : changed
-              .filter(
-                (path) =>
-                  this.frozen.has(path) &&
-                  freezable(path) &&
-                  !item.frozenTestsToChange?.includes(path),
-              )
-              .map((path) => `${path} (frozen test)`)),
+        ...this.frozenEdits(item, touched).map((path) => `${path} (frozen test)`),
       ];
       if (violations.length)
         await ledger.append({ type: "scope", caseId: item.id, attempt, violations });
@@ -1012,6 +1102,7 @@ export class AutoRunEngine {
     deadline: Date,
     finalize = false,
     waited?: { ms: number; hardEnd: number },
+    endReason = OUT_OF_TIME,
   ): Promise<CaseAttemptResult> {
     const controller = new AbortController();
     const caseEndsAt = deadline.getTime();
@@ -1022,7 +1113,7 @@ export class AutoRunEngine {
       clearTimeout(timer);
       if (endsAt === Number.POSITIVE_INFINITY) return;
       timer = setTimeout(
-        () => controller.abort(new Error("case allowance or hard limit reached")),
+        () => controller.abort(new Error(endReason)),
         Math.max(0, endsAt - this.clock().getTime()),
       );
     };
@@ -1030,11 +1121,12 @@ export class AutoRunEngine {
     const poll = setInterval(() => {
       void this.pollControl()
         .then(() => {
-          if (this.stopNow) controller.abort(new Error("stopped by the owner"));
+          if (this.stopNow) controller.abort(new Error(this.stoppedReason()));
         })
         .catch(() => undefined);
     }, this.deps.controlPollMs ?? 5000);
     try {
+      await this.pollInbox();
       return await this.deps.worker.runCase({
         case: item,
         attempt,
@@ -1042,6 +1134,11 @@ export class AutoRunEngine {
         fresh,
         repairFindings: findings,
         learnings: this.learnings.slice(-5),
+        ownerNotes: [...this.ownerNotes],
+        frozenTests: [...this.frozen].filter((path) => !item.frozenTestsToChange?.includes(path)),
+        hearOwner: (deliver) => {
+          this.toWorker = deliver;
+        },
         worktree: this.deps.repo.worktree,
         deadline,
         signal: controller.signal,
@@ -1074,6 +1171,7 @@ export class AutoRunEngine {
     } catch (error) {
       return { finish: "none", error: error instanceof Error ? error.message : String(error) };
     } finally {
+      this.toWorker = undefined;
       clearTimeout(timer);
       clearInterval(poll);
     }
@@ -1168,13 +1266,16 @@ export class AutoRunEngine {
       try {
         const stop = this.stopSignal();
         try {
-          caught = !(await this.deps.verifier.verify(this.deps.repo.worktree, stop.signal)).passed;
+          caught = !(
+            await this.deps.verifier.verify(this.deps.repo.worktree, stop.signal, {
+              stopOnFailure: true,
+            })
+          ).passed;
         } finally {
           stop.dispose();
         }
       } finally {
-        await writeFile(path, original);
-        await clearPendingMutation(ledger.runDir);
+        await putBackMutation(ledger.runDir, path, original);
       }
       tried.push({ path: mutant.path, line: mutant.line, change: mutant.change, caught, mutant });
     }
@@ -1269,13 +1370,44 @@ export class AutoRunEngine {
     return [...named].filter((path) => this.frozen.has(path) && !this.allowedFrozen.has(path));
   }
 
-  /** Frozen tests in a case's way: the Planner may let the rest of the run change them. */
+  /** Put the case's acceptance tests in as the Planner wrote them, or say why they cannot be. */
+  private async placeAcceptance(item: AutoCase): Promise<string | undefined> {
+    if (!item.acceptanceTests?.length) return undefined;
+    try {
+      const written = await placeAcceptanceTests(
+        this.deps.repo.worktree,
+        item.acceptanceTests,
+        item.frozenTestsToChange,
+      );
+      if (written.length)
+        this.deps.onActivity?.(`${item.title}: added acceptance tests ${written.join(", ")}`);
+      return undefined;
+    } catch (error) {
+      return `its acceptance tests could not be added: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  /** Frozen tests a case's change edits without leave. */
+  private frozenEdits(item: AutoCase, changed: string[]): string[] {
+    if (item.changesFrozenTests && !item.frozenTestsToChange?.length) return [];
+    return changed.filter(
+      (path) =>
+        this.frozen.has(path) && freezable(path) && !item.frozenTestsToChange?.includes(path),
+    );
+  }
+
+  /**
+   * Frozen tests in a case's way: the Planner may let the rest of the run
+   * change them. Each case asks about a test once.
+   */
   private async askAboutFrozen(
     item: AutoCase,
     failure: string,
-    tests: string[],
+    named: string[],
   ): Promise<Array<{ path: string; reason: string }>> {
+    const tests = named.filter((path) => !this.askedFrozen.has(`${item.id} ${path}`));
     if (!tests.length || !this.deps.onFrozenBlocked) return [];
+    for (const path of tests) this.askedFrozen.add(`${item.id} ${path}`);
     const stop = this.stopSignal();
     try {
       const allowed = (
@@ -1322,6 +1454,23 @@ export class AutoRunEngine {
     if (attempt > 0) await this.saveAttemptDraft(caseId, attempt, "abandoned");
     await this.resetToLastCheckpoint();
     await this.deps.ledger.append({ type: "case_abandoned", caseId, reason });
+    // A trap one task fell into waits for the next ones too: they hear of it now, not at
+    // the milestone review. One run lost three tasks to one native-module trap.
+    const failure = (await this.deps.ledger.state()).cases.find(
+      (item) => item.id === caseId,
+    )?.lastFailure;
+    if (failure && !stoppedForTime(failure)) {
+      const title = this.cases.find((item) => item.id === caseId)?.title ?? caseId;
+      await this.learn(
+        `"${oneLine(title)}" was not accepted; its last failure: ${oneLine(failure).slice(0, 300)}. If your work meets the same thing, avoid that mistake.`,
+      );
+    }
+  }
+
+  /** A lesson for the cases after this one, recorded so a resumed run still has it. */
+  private async learn(...texts: string[]): Promise<void> {
+    this.learnings.push(...texts);
+    await this.deps.ledger.append({ type: "learned", texts });
   }
 
   private async saveAttemptDraft(caseId: string, attempt: number, label: string): Promise<void> {
@@ -1383,18 +1532,18 @@ export class AutoRunEngine {
     attempt: number,
   ): Promise<VerificationResult | Ending> {
     const waits = this.deps.inferenceWaitsMs ?? INFERENCE_WAITS_MS;
-    const stopped: Ending = {
+    const stopped = (): Ending => ({
       outcome: "cancelled_after_checkpoint",
-      reason: "stopped by the owner",
-    };
+      reason: this.stoppedReason(),
+    });
     for (let n = 0; ; n++) {
       const stop = this.stopSignal();
       try {
         const result = await this.deps.verifier.verify(this.deps.repo.worktree, stop.signal);
         // Checks cut short by a stop decide nothing; the case resumes where it was.
-        return this.stopNow ? stopped : result;
+        return this.stopNow ? stopped() : result;
       } catch (error) {
-        if (this.stopNow) return stopped;
+        if (this.stopNow) return stopped();
         const message = error instanceof Error ? error.message : String(error);
         if (n >= waits.length)
           return {
@@ -1410,7 +1559,7 @@ export class AutoRunEngine {
           on: "container",
         });
         await this.wait(waits[n]);
-        if (this.stopNow || this.stopAfterCase) return stopped;
+        if (this.stopNow || this.stopAfterCase) return stopped();
       } finally {
         stop.dispose();
       }
@@ -1447,7 +1596,7 @@ export class AutoRunEngine {
     const poll = setInterval(() => {
       void this.pollControl()
         .then(() => {
-          if (this.stopNow) controller.abort(new Error("stopped by the owner"));
+          if (this.stopNow) controller.abort(new Error(this.stoppedReason()));
         })
         .catch(() => undefined);
     }, this.deps.controlPollMs ?? 5000);
@@ -1458,6 +1607,7 @@ export class AutoRunEngine {
     await this.pollInbox();
     const control = await this.deps.ledger.readControl();
     if (!control) return;
+    this.stopReason ??= control.reason;
     if (control.command === "stop_now" && !this.stopNow) {
       this.stopNow = true;
       await this.deps.ledger.append({ type: "stop_requested", mode: "now" });
@@ -1467,13 +1617,21 @@ export class AutoRunEngine {
     }
   }
 
-  /** The inbox: Pause stops after the case, Stop now stops at once, a message is recorded. */
+  /**
+   * The inbox: Pause stops after the case, Stop now stops at once, and a
+   * message goes to the running worker at once and to every later attempt.
+   */
   private async pollInbox(): Promise<void> {
     const ledger = this.deps.ledger;
-    if (!this.inboxTaken)
-      this.inboxTaken = new Set(
-        (await ledger.read()).flatMap(({ event }) => (event.type === "inbox" ? [event.id] : [])),
+    if (!this.inboxTaken) {
+      const taken = (await ledger.read()).flatMap(({ event }) =>
+        event.type === "inbox" ? [event] : [],
       );
+      this.inboxTaken = new Set(taken.map((event) => event.id));
+      this.ownerNotes = taken.flatMap((event) =>
+        event.cmd === "message" && event.text ? [event.text] : [],
+      );
+    }
     for (const entry of await ledger.readInbox()) {
       if (this.inboxTaken.has(entry.id)) continue;
       this.inboxTaken.add(entry.id);
@@ -1483,7 +1641,13 @@ export class AutoRunEngine {
         cmd: entry.cmd,
         ...(entry.text ? { text: entry.text } : {}),
       });
-      if (entry.cmd === "stop_now" && !this.stopNow) {
+      if (entry.cmd === "message" && entry.text) {
+        this.ownerNotes.push(entry.text);
+        if (this.toWorker) {
+          this.toWorker(entry.text);
+          this.deps.onActivity?.("Passed the owner's message to the worker");
+        }
+      } else if (entry.cmd === "stop_now" && !this.stopNow) {
         this.stopNow = true;
         await ledger.append({ type: "stop_requested", mode: "now" });
       } else if (entry.cmd === "pause" && !this.stopAfterCase && !this.stopNow) {
@@ -1491,6 +1655,14 @@ export class AutoRunEngine {
         await ledger.append({ type: "stop_requested", mode: "after_case" });
       }
     }
+  }
+
+  /** Why the run stops early: the runner's own reason, or the owner's request. */
+  private stoppedReason(): string {
+    return (
+      this.stopReason ??
+      (this.stopNow ? "stopped by the owner" : "stopped after the case, as asked")
+    );
   }
 
   private async end(state: AutoRunState, ending: Ending): Promise<AutoOutcome> {
@@ -1529,7 +1701,7 @@ async function isDirectory(path: string): Promise<boolean> {
 /** How a run ends when no case is left that can run. */
 function finalOutcome(state: AutoRunState): Ending {
   const accepted = state.cases.every((c) => c.stage === "accepted");
-  if (accepted) return { outcome: "objective_met", reason: "every case verified" };
+  if (accepted) return { outcome: "objective_met", reason: "every task verified" };
   const abandoned = state.cases.filter((c) => c.stage === "abandoned").map((c) => c.id);
   const reason = `no case left that can run${abandoned.length ? ` (abandoned: ${abandoned.join(", ")})` : ""}`;
   if (state.cases.some((c) => c.stage === "blocked"))
@@ -1554,13 +1726,21 @@ function firstFailure(result: VerificationResult): string {
  * name a passing test when others failed.
  */
 export function failingLine(output: string): string {
+  // A passing test can mention a failure in its name: one reason given was
+  // `test report::tests::test_write_report_file_error ... ok`.
   const lines = output
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("stderr |"));
+    .filter((l) => l && !l.startsWith("stderr |") && !/\.\.\. ok$|^test result: ok\./.test(l));
   return (
-    lines.find((l) => /^(FAIL|×|✗)\s|AssertionError|^Error:|error TS\d+/.test(l)) ??
+    lines.find((l) =>
+      /^(FAIL|×|✗)\s|^FAILED\b|\.\.\. FAILED$|AssertionError|^Error:|^error(\[E\d+\])?:|error TS\d+/.test(
+        l,
+      ),
+    ) ??
     lines.find((l) => /error|fail|assert/i.test(l)) ??
+    // A formatter's check prints only the diff: `cargo fmt --check` left run 19's repair reason empty (28 Oct).
+    lines[0] ??
     ""
   );
 }
@@ -1592,16 +1772,28 @@ export function namedFiles(
 }
 
 /** The frozen test files a failed check's FAIL lines name. */
+/** A test runner's failure line: vitest and jest (FAIL, ×), node:test (✗), Playwright (✘). */
+const FAILURE_LINE = /^\s*(FAIL|×|✗|✘)\s/;
+
 export function failingFrozenTests(
   verification: VerificationResult,
   frozen: ReadonlySet<string>,
 ): string[] {
   const failed = verification.commands.filter((c) => c.exitCode !== 0 || c.error);
   return [...frozen].filter((path) =>
-    failed.some((c) =>
-      c.output.split("\n").some((l) => /^\s*(FAIL|×|✗)\s/.test(l) && l.includes(path)),
-    ),
+    failed.some((c) => c.output.split("\n").some((l) => FAILURE_LINE.test(l) && l.includes(path))),
   );
+}
+
+/** The test files a failed check names on its failure lines. */
+export function failingTests(verification: VerificationResult): string[] {
+  const named = new Set<string>();
+  for (const command of verification.commands.filter((c) => c.exitCode !== 0 || c.error))
+    for (const line of command.output.split("\n"))
+      if (FAILURE_LINE.test(line))
+        for (const match of line.matchAll(/[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?/g))
+          named.add(match[0]);
+  return [...named];
 }
 
 export function failureReason(
@@ -1623,6 +1815,11 @@ export function failureReason(
           : "",
         violations.length > nested.length
           ? `These paths are outside what the case may change: ${violations.filter((v) => !isNestedRepository(v)).join(", ")}. Undo those changes.`
+          : "",
+        // A task asked for an AGENTS.md the plan did not list, and
+        // its worker kept the file twice, taking the refusal for a stray warning.
+        violations.some(runsOnHost)
+          ? `Delete ${violations.filter(runsOnHost).join(", ")}, even if your task asks for it: Autopilot keeps no file that steers agents or tools on the owner's machine (AGENTS.md, CLAUDE.md, editor, hook or direnv settings) unless the plan lists it among the task's files, and this plan does not. Put what it would say in the project's docs; the rest of your work stands.`
           : "",
         violations.some((v) => v.endsWith(" (frozen test)"))
           ? "Tests accepted earlier are frozen: put new tests in a new test file."

@@ -23,17 +23,6 @@ export function newWorkflowIdentity(): WorkflowIdentity {
   };
 }
 
-export function initialWorkflowCheckpoint(identity: WorkflowIdentity): WorkflowCheckpoint {
-  return {
-    workflowId: identity.workflowId,
-    revision: 1,
-    planRevision: 0,
-    managerConversationId: identity.managerConversationId,
-    workerConversations: {},
-    dispatchAuthorized: false,
-  };
-}
-
 export function assertWorkflowCanDispatch(checkpoint: WorkflowCheckpoint | undefined): void {
   if (!checkpoint?.dispatchAuthorized) {
     throw new Error(

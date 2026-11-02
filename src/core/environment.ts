@@ -62,7 +62,6 @@ export interface EnvironmentAdapter {
     context: EnvironmentPrepareContext,
   ): Promise<EnvironmentSelection>;
   workerPath(selection: EnvironmentSelection): string[] | undefined;
-  verificationProgram(selection: EnvironmentSelection): { program: string; prefixArgs: string[] };
   /**
    * Bind a bare toolchain program to this environment. Unknown programs stay
    * unchanged so adapters do not need a catalog of every ecosystem.

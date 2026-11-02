@@ -48,6 +48,7 @@ import {
 } from "@runtime/policy-extension";
 import { workerProviderOptions } from "@runtime/poundlock-provider";
 import { createDispatchPiSession } from "@runtime/sessions";
+import { isSpendingRefusal, type ModelFallback } from "@shared/spending-limit";
 import {
   DEFAULT_EXCLUSIONS,
   defaultBudget,
@@ -110,6 +111,9 @@ export interface AutoWorkerOptions {
   model: InteractiveModel;
   /** The route the run was started on; Poundlock is not sent context for any other. */
   lastApprovedRoutingRevision?: string;
+  /** The owner's local fallback, taken once if the provider refuses for a spending limit. */
+  fallback?: InteractiveModel;
+  onFallback?: (fallback: ModelFallback) => Promise<void> | void;
   reasoning?: ReasoningChoice;
   controllerUrl: string;
   token: string;
@@ -152,14 +156,8 @@ export function autoProject(run: {
     source: {
       kind: "local_folder",
       originalPath: run.worktree,
-      capturedAt: run.createdAt,
-      snapshotSha256: "",
       baseRevision: run.baseCommit,
-      includedFiles: 0,
-      includedBytes: 0,
       excludedPatterns: [...DEFAULT_EXCLUSIONS],
-      includedUncommitted: true,
-      originalFingerprint: "",
     },
     policy: {
       ...defaultPolicy(),
@@ -167,15 +165,15 @@ export function autoProject(run: {
       verification: { commands: run.checks, protectedPaths: run.protectedPaths },
     },
     budget: defaultBudget(),
-    integration: {
-      headRevision: run.baseCommit,
-      expectedBase: run.baseCommit,
-      appliedPatchSha256: [],
-    },
+    integration: {},
     planRevision: 1,
     managerSessionId: "none",
-    eventCursor: 0,
   };
+}
+
+function frozenList(paths: string[]): string {
+  const shown = paths.slice(0, 20).join(", ");
+  return paths.length > 20 ? `${shown} and ${paths.length - 20} more.` : `${shown}.`;
 }
 
 /** The first message of an attempt: the case, what earlier cases learned, and why this attempt exists. */
@@ -191,11 +189,20 @@ export function caseBrief(
     `Acceptance: ${item.acceptanceCriteria}`,
     `Dispatch accepts the case when these checks pass: ${context.checks.map((c) => `\`${c}\``).join(", ")}.`,
     writable?.length ? `You may change only: ${writable.join(", ")}.` : "",
+    input.frozenTests.length
+      ? `Frozen tests, other tasks' accepted work: leave them byte for byte as they are, formatting included, and run a formatter only on the files you change. ${frozenList(input.frozenTests)}`
+      : "",
     item.frozenTestsToChange?.length
       ? `These frozen tests are out of date and you may change them, only as this case needs, although other tasks wrote them and they are not among the files to touch: ${item.frozenTestsToChange.join(", ")}.${item.frozenChangeReason ? ` Why: ${item.frozenChangeReason}` : ""} Every other frozen test stays as it is.`
       : "",
     input.learnings.length
       ? `What earlier cases learned:\n${input.learnings.map((l) => `- ${l}`).join("\n")}`
+      : "",
+    input.ownerNotes.length
+      ? `## The owner's notes for this run\nFollow them where they apply to this case.\n${input.ownerNotes
+          .slice(-5)
+          .map((note) => `- ${note.slice(0, 1000)}`)
+          .join("\n")}`
       : "",
     input.finalize
       ? `## Time is up for this case\n${FINALIZE_NOTE}`
@@ -256,6 +263,8 @@ async function execResilient(
 export function createAutoWorker(
   options: AutoWorkerOptions,
 ): AutoWorkerPort & AutoVerifierPort & AutoPreparePort {
+  let model = options.model;
+  let approvedRevision = options.lastApprovedRoutingRevision;
   const containerBash = (meta: { caseId: string; attempt: number }) => ({
     exec: async (
       command: string,
@@ -312,7 +321,7 @@ export function createAutoWorker(
       return { passed: commands.every((c) => c.exitCode === 0), commands };
     },
 
-    async verify(worktree, signal): Promise<VerificationResult> {
+    async verify(worktree, signal, run): Promise<VerificationResult> {
       // The checks start from what setup prepared and the worktree holds: nothing an
       // attempt left running, and nothing it put in the container's /tmp (its HOME).
       await options.isolation.killAll();
@@ -329,7 +338,7 @@ export function createAutoWorker(
             timeoutMs: options.commandMs,
           }),
         signal,
-        { rethrow: () => true },
+        { rethrow: () => true, stopOnFailure: run?.stopOnFailure },
       );
       return {
         passed: view.status === "passed",
@@ -402,7 +411,7 @@ export function createAutoWorker(
           cwd: worktree,
           agentDir: join(options.runDir, "attempts", `${input.case.id}-${input.attempt}`),
           sessionDir: join(options.runDir, "sessions", input.case.id, input.sessionKey),
-          model: options.model,
+          model,
           reasoning: options.reasoning,
           controllerUrl: options.controllerUrl,
           token: options.token,
@@ -444,9 +453,9 @@ export function createAutoWorker(
           provider: workerProviderOptions({
             controllerUrl: options.controllerUrl,
             token: options.token,
-            model: options.model,
+            model,
             capabilities: options.capabilities,
-            lastApprovedRoutingRevision: options.lastApprovedRoutingRevision,
+            lastApprovedRoutingRevision: approvedRevision,
             session: `auto-${input.case.id}`,
             onCapacityWait: (wait) => {
               // Poundlock answering "busy" is progress, not a stalled model.
@@ -471,7 +480,7 @@ export function createAutoWorker(
         stall = setInterval(
           () => {
             if (running === 0 && Date.now() - lastProgress > options.stallMs && !record.stopped) {
-              record.stopped = `no progress from ${options.model.id} for ${Math.round(options.stallMs / 60_000)} min`;
+              record.stopped = `no progress from ${model.id} for ${Math.round(options.stallMs / 60_000)} min`;
               void session?.abort();
             }
           },
@@ -486,15 +495,23 @@ export function createAutoWorker(
             };
           },
           {
-            modelId: options.model.id,
+            modelId: model.id,
             cwd: worktree,
             onActivity: (text) => options.onActivity?.(`${input.case.title}: ${text}`),
-            initial: `Waiting for ${options.model.id}`,
+            initial: `Waiting for ${model.id}`,
           },
         );
         input.signal.addEventListener("abort", abort, { once: true });
         if (input.signal.aborted) throw new Error(String(input.signal.reason ?? "cancelled"));
         const live = session;
+        // A message the owner sends meanwhile reaches the worker before its next model call.
+        input.hearOwner?.((text) => {
+          void live
+            .steer(
+              `The owner says, while you work: ${text}\nFollow it where it applies to this case.`,
+            )
+            .catch(() => undefined);
+        });
         const first = await runWorkerTurn(live, caseBrief(input, options));
         const last = await hooks.afterTurn(live, first, (text) => runWorkerTurn(live, text));
         if (last && "content" in last && Array.isArray(last.content))
@@ -523,6 +540,20 @@ export function createAutoWorker(
         await options.isolation.killAll().catch(() => undefined);
       }
       const finish = record.finish;
+      // A spending refusal does not pass with waiting: the case goes on, once,
+      // on the owner's local fallback, which the rest of the run keeps.
+      const fallback = options.fallback;
+      const switched = !finish && fallback && model !== fallback && isSpendingRefusal(error);
+      if (switched) {
+        await options.onFallback?.({
+          role: "worker",
+          from: model.id,
+          to: fallback.id,
+          reason: error ?? "",
+        });
+        model = fallback;
+        approvedRevision = fallback.routingRevision;
+      }
       return {
         finish: finish?.status ?? "none",
         summary:
@@ -531,7 +562,7 @@ export function createAutoWorker(
         blockedReason: finish?.blockedReason,
         learnings: finish?.learnings,
         error,
-        inferenceUnavailable: isInferenceUnavailable(error) && !finish,
+        inferenceUnavailable: Boolean(switched) || (isInferenceUnavailable(error) && !finish),
         capacityBusy: !finish && /capacity_in_use/.test(error ?? ""),
         usage: record.usage,
         compactions: record.compactions,

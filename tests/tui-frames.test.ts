@@ -343,4 +343,13 @@ describe("a prompt's box", () => {
     expect(lines.every((line) => visibleWidth(line) === 50)).toBe(true);
     expect(lines.length).toBeGreaterThan(6);
   });
+
+  it("starts with the cursor after what it offers, so Backspace edits it", async () => {
+    // "0.5" over an offered "24" used to give 0.524: the cursor sat in front.
+    const { tui, overlay } = overlayTui();
+    const answer = showPrompt(tui, PLAIN, { title: "Time limit (hours)", initial: "24" });
+    const box = overlay() as unknown as { handleInput(data: string): void };
+    for (const key of ["\x7f", "\x7f", "0.5", "\r"]) box.handleInput(key);
+    expect(await answer).toBe("0.5");
+  });
 });

@@ -280,6 +280,27 @@ type SaveState =
   | { kind: "saved"; at: number }
   | { kind: "error"; message: string };
 
+/**
+ * One action at a time: `act` runs `work` through `run` with its label shown as
+ * pending, and ignores another action until that one settles.
+ */
+export function usePendingAction(run: <T>(work: () => Promise<T>) => Promise<T | undefined>) {
+  const [pending, setPending] = useState("");
+  const pendingRef = useRef(false);
+  async function act(label: string, work: () => Promise<unknown>) {
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(label);
+    try {
+      await run(work);
+    } finally {
+      pendingRef.current = false;
+      setPending("");
+    }
+  }
+  return { pending, act };
+}
+
 /** Save feedback for explicit-save forms and immediately saved preferences. */
 export function useSaveState() {
   const [state, setState] = useState<SaveState>({ kind: "clean" });

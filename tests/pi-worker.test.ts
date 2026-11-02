@@ -7,7 +7,6 @@ import { commandApprovalAction, runHostCommand } from "@runtime/host-command";
 import {
   beginSandboxedEnvironment,
   endSandboxedEnvironment,
-  ranNoTests,
   runWorkerTurn,
   WORKER_SYSTEM_PROMPT,
   workerBrief,
@@ -258,18 +257,6 @@ describe("worker turns", () => {
   });
 });
 
-describe("vacuous test runs", () => {
-  it("recognizes runners that exit 0 without running any test", () => {
-    expect(ranNoTests("Found 0 test(s).\nSystem check identified no issues.\nNO TESTS RAN")).toBe(
-      true,
-    );
-    expect(ranNoTests("\nRan 0 tests in 0.000s\n\nOK")).toBe(true);
-    expect(ranNoTests("collected 0 items")).toBe(true);
-    expect(ranNoTests("Found 3 test(s).\nRan 3 tests in 0.01s\n\nOK")).toBe(false);
-    expect(ranNoTests("System check identified no issues (0 silenced).")).toBe(false);
-  });
-});
-
 describe("the interactive worker's brief", () => {
   const project: ProjectRecord = {
     id: "project",
@@ -281,21 +268,14 @@ describe("the interactive worker's brief", () => {
     source: {
       kind: "local_folder",
       originalPath: "/tmp/example",
-      capturedAt: "now",
-      snapshotSha256: "",
       baseRevision: "",
-      includedFiles: 0,
-      includedBytes: 0,
       excludedPatterns: [],
-      includedUncommitted: true,
-      originalFingerprint: "",
     },
     policy: defaultPolicy(),
     budget: defaultBudget(),
-    integration: { headRevision: "", expectedBase: "", appliedPatchSha256: [] },
+    integration: {},
     planRevision: 0,
     managerSessionId: "manager",
-    eventCursor: 0,
   };
   const task = (extra: Partial<TaskRecord> = {}): TaskRecord => ({
     id: "task_1",

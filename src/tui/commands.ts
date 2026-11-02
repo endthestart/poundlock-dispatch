@@ -11,36 +11,12 @@
  * popover shows, because pi-tui reads the same fields from a `SlashCommand`.
  */
 import type { AutocompleteItem, SlashCommand } from "@earendil-works/pi-tui";
+import type { TranscriptDensity } from "@shared/live-work-view";
 import { TOOL_TRUST_MODES } from "@shared/permissions";
 import { EXECUTION_ROLES } from "@shared/roles";
 import { REASONING_LEVELS } from "@shared/types";
-
-/** A command entry, before `app.ts` attaches its handler. */
-export interface CommandDef {
-  /** Including the leading "/", so it matches `input.split(/\s+/)[0]` directly. */
-  name: `/${string}`;
-  description: string;
-  argumentHint?: string;
-  /**
-   * `argumentText` is everything after the command name and one space — the
-   * whole remainder, not just the word under the cursor (that is how pi-tui's
-   * `CombinedAutocompleteProvider` calls it). A command with more than one
-   * argument has to notice for itself which one is being typed.
-   */
-  getArgumentCompletions?: (argumentText: string) => AutocompleteItem[] | null;
-}
-
-function firstWordCompletions(
-  argumentText: string,
-  choices: readonly string[],
-): AutocompleteItem[] | null {
-  // Only the first argument is completed from a fixed list; a second word
-  // means the user has moved on to something this file cannot guess (a
-  // profile name, a path) without a network call or a directory read.
-  if (argumentText.includes(" ")) return null;
-  const matches = choices.filter((choice) => choice.startsWith(argumentText));
-  return matches.length ? matches.map((choice) => ({ value: choice, label: choice })) : null;
-}
+import { type CommandDef, firstWordCompletions } from "./command-def.js";
+import { SETTINGS_COMMAND_DEFS } from "./settings-commands.js";
 
 /** `/role <role> <profile>`: complete the role, never the profile. */
 export function roleArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
@@ -72,6 +48,20 @@ export function networkArgumentCompletions(argumentText: string): AutocompleteIt
   return firstWordCompletions(argumentText, Object.keys(NETWORK_CHOICES));
 }
 
+/** `/transcript`'s two settings, worded as the desktop app's Transcript chip words them. */
+export const TRANSCRIPT_DENSITY: Record<TranscriptDensity, string> = {
+  normal: "Normal. Each reply's steps folded, and one update between messages.",
+  verbose: "Verbose. Every step and update, as it happened.",
+};
+
+export function isTranscriptDensity(value: string): value is TranscriptDensity {
+  return Object.hasOwn(TRANSCRIPT_DENSITY, value);
+}
+
+export function transcriptArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
+  return firstWordCompletions(argumentText, Object.keys(TRANSCRIPT_DENSITY));
+}
+
 /** `/grant <path> [read|write]`: complete the mode once a path is typed. */
 export function grantArgumentCompletions(argumentText: string): AutocompleteItem[] | null {
   const spaceIndex = argumentText.indexOf(" ");
@@ -89,6 +79,10 @@ export const COMMAND_DEFS: CommandDef[] = [
   },
   { name: "/chat", description: "Return to the conversation." },
   {
+    name: "/history",
+    description: "Earlier conversations, plans and tasks that /new and /new-run set aside.",
+  },
+  {
     name: "/compact",
     description:
       "Summarise the manager's older messages to free up context. Instructions say what to keep.",
@@ -96,10 +90,36 @@ export const COMMAND_DEFS: CommandDef[] = [
   },
   { name: "/approve", description: "Approve the proposed plan and start the run." },
   {
+    name: "/new",
+    description: "New conversation: the manager starts fresh, and this one moves to History.",
+  },
+  {
+    name: "/new-run",
+    description: "Start a new run: clear the plan's approval and its tasks, keep the conversation.",
+  },
+  {
+    name: "/task",
+    description:
+      "A task's evidence: attempts, checks and their output, the worker's report and the diff.",
+    argumentHint: "<number> [attempt]",
+  },
+  {
+    name: "/archive",
+    description: "Hide this project from the list and close; its history is kept.",
+  },
+  {
+    name: "/remove",
+    description: "Delete Dispatch's records of this project and close. Never deletes the folder.",
+  },
+  {
     name: "/approve-models",
     description: "Re-approve the route Poundlock is serving now, after it changed.",
   },
-  { name: "/models", description: "List the model profiles Poundlock is serving." },
+  {
+    name: "/models",
+    description: "List the model profiles Poundlock is serving, or say more about one.",
+    argumentHint: "[profile]",
+  },
   {
     name: "/role",
     description: "Bind a role to a profile.",
@@ -107,10 +127,23 @@ export const COMMAND_DEFS: CommandDef[] = [
     getArgumentCompletions: roleArgumentCompletions,
   },
   {
+    name: "/project-model",
+    description: "This project's own Manager or Worker model, in place of the app default.",
+    argumentHint: "[manager|worker] [profile|default]",
+    getArgumentCompletions: (argumentText) =>
+      firstWordCompletions(argumentText, ["manager", "worker"]),
+  },
+  {
     name: "/reasoning",
     description: "This conversation's manager reasoning.",
     argumentHint: "[setting|default]",
     getArgumentCompletions: reasoningArgumentCompletions,
+  },
+  {
+    name: "/transcript",
+    description: "How much of the work the conversation shows: normal or verbose.",
+    argumentHint: "[normal|verbose]",
+    getArgumentCompletions: transcriptArgumentCompletions,
   },
   {
     name: "/trust",
@@ -125,6 +158,39 @@ export const COMMAND_DEFS: CommandDef[] = [
     getArgumentCompletions: networkArgumentCompletions,
   },
   {
+    name: "/websearch",
+    description:
+      "Whether this project's manager and Planner may search the web (needs Internet on), and the search engine every project uses.",
+    argumentHint: "[on|off] | engine <address|none>",
+    getArgumentCompletions: (argumentText) =>
+      firstWordCompletions(argumentText, ["on", "off", "engine"]),
+  },
+  {
+    name: "/checks",
+    description: "The commands that decide whether a task's work is accepted.",
+    argumentHint: "[add <command> | remove <number> | clear | mutation [on|off]]",
+    getArgumentCompletions: (argumentText) =>
+      firstWordCompletions(argumentText, ["add", "remove", "clear", "mutation"]),
+  },
+  {
+    name: "/fix-rounds",
+    description: "How many times a task whose checks fail goes back to its worker.",
+    argumentHint: "[0-5|default]",
+  },
+  ...SETTINGS_COMMAND_DEFS,
+  {
+    name: "/runtime",
+    description: "The Node this project's workers use; they never inherit your shell PATH.",
+    argumentHint: "[node <number|folder|none>]",
+  },
+  {
+    name: "/repo-account",
+    description: "Public clone only, or the GitHub or Gitea account saved with /accounts.",
+    argumentHint: "[github|gitea|none]",
+    getArgumentCompletions: (argumentText) =>
+      firstWordCompletions(argumentText, ["github", "gitea", "none"]),
+  },
+  {
     name: "/grant",
     description: "Let this project use another folder.",
     argumentHint: "<path> [read|write]",
@@ -132,20 +198,37 @@ export const COMMAND_DEFS: CommandDef[] = [
   },
   { name: "/revoke", description: "Stop using a granted folder.", argumentHint: "<path>" },
   {
+    name: "/grant-file",
+    description: "Let the manager read one file that is otherwise excluded, such as a .env.",
+    argumentHint: "<path>",
+  },
+  {
+    name: "/revoke-file",
+    description: "Take back a file /grant-file let the manager read.",
+    argumentHint: "<path>",
+  },
+  {
     name: "/autopilot",
     description:
       "Autopilot: build the approved plan unattended in a container; results are verified, not reviewed.",
-    argumentHint: "start --image <name> | status | stop [--now] | resume | export | hide",
+    argumentHint:
+      "start [--image <name> …] | status | details | message <words> | stop [--now] | resume | export | hide",
     getArgumentCompletions: (argumentText) =>
       firstWordCompletions(argumentText, [
         "start",
         "status",
+        "message",
         "stop",
         "resume",
         "export",
         "list",
+        "details",
         "hide",
         "watch",
+        "merge",
+        "report",
+        "drop",
+        "clean",
       ]),
   },
   { name: "/auto", description: "The same as /autopilot, for one more release." },

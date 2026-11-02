@@ -11,7 +11,7 @@
  */
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import { collectLiveSnapshot, listLiveProjectFiles, previewFolder } from "@core/snapshot";
+import { collectLiveSnapshot, listLiveProjectFiles } from "@core/snapshot";
 import { DEFAULT_EXCLUSIONS } from "@shared/types";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./support/temp-dir";
@@ -63,11 +63,9 @@ async function project(gitignore?: string): Promise<string> {
 
 /** Every way the code can enumerate files for upload, so none can drift from the others. */
 async function uploads(root: string): Promise<Record<string, string[]>> {
-  const preview = await previewFolder(root);
   const live = await listLiveProjectFiles(root);
   const collected = await collectLiveSnapshot(root);
   return {
-    previewFolder: preview.files.filter((file) => file.included).map((file) => file.path),
     listLiveProjectFiles: live.map((file) => file.path),
     collectLiveSnapshot: collected.map((file) => file.path),
   };
@@ -139,9 +137,6 @@ describe("snapshot path anchoring", () => {
 
   it("honours root-anchored .gitignore rules, and only at the root", async () => {
     const found = await uploads(await anchoredProject());
-    // The folder preview applies the built-in floor alone and never reads a
-    // .gitignore; only the two readers that build a real upload do.
-    delete found.previewFolder;
     for (const [source, paths] of Object.entries(found)) {
       for (const gone of ROOT_ONLY)
         expect(paths, `${source} must exclude anchored ${gone}`).not.toContain(gone);

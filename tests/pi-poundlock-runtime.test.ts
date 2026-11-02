@@ -26,18 +26,19 @@ import {
   RoleIsolationError,
   resolveInteractiveWorkerProfile,
 } from "@core/role-routing";
+import { assertWorkflowCanDispatch, newWorkflowIdentity } from "@core/workflow-identity";
 import {
-  assertWorkflowCanDispatch,
-  initialWorkflowCheckpoint,
-  newWorkflowIdentity,
-} from "@core/workflow-identity";
-import { ensurePreflight, wrapStreamForPoundlock } from "@runtime/poundlock-provider";
+  ensurePreflight,
+  poundlockModelDefinition,
+  wrapStreamForPoundlock,
+} from "@runtime/poundlock-provider";
+import type { InteractiveModel } from "@shared/types";
 import { describe, expect, it } from "vitest";
 
 describe("preflight cache", () => {
-  it("explains how to replace a token that cannot use external profiles", () => {
+  it("explains how to let a token use external profiles", () => {
     expect(blockedPreflightMessage("external_permission_required")).toContain(
-      "replacement token with Call external providers",
+      "edit this application token and tick “external:invoke”",
     );
   });
   it("keys by controller, token fingerprint, profile UUID, route, and operation", () => {
@@ -60,6 +61,20 @@ describe("preflight cache", () => {
     expect(shouldInvalidatePreflight({ code: "managed_identity_reconciliation_required" })).toBe(
       true,
     );
+  });
+});
+
+describe("prompt caching", () => {
+  it("marks an Anthropic model's prompt for caching, also when OpenRouter serves it", () => {
+    const format = (model: Partial<InteractiveModel>) =>
+      poundlockModelDefinition({ id: "m", ...model } as InteractiveModel).compat.cacheControlFormat;
+    expect(format({ provider: "anthropic" })).toBe("anthropic");
+    expect(
+      format({ provider: "openrouter", servedModel: "openrouter/anthropic/claude-sonnet-5.5" }),
+    ).toBe("anthropic");
+    expect(
+      format({ provider: "openrouter", servedModel: "openrouter/openai/gpt-6.1-sol" }),
+    ).toBeUndefined();
   });
 });
 
@@ -716,7 +731,13 @@ describe("workflow identity", () => {
   it("keeps Pi conversation restoration from dispatching work", () => {
     const identity = newWorkflowIdentity();
     expect(identity.workflowId).not.toBe(identity.managerConversationId);
-    const checkpoint = initialWorkflowCheckpoint(identity);
+    const checkpoint = {
+      ...identity,
+      revision: 1,
+      planRevision: 0,
+      workerConversations: {},
+      dispatchAuthorized: false,
+    };
     expect(() => assertWorkflowCanDispatch(checkpoint)).toThrow(/cannot start or repeat work/);
     expect(() =>
       assertWorkflowCanDispatch({ ...checkpoint, dispatchAuthorized: true }),

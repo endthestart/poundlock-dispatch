@@ -4,14 +4,28 @@
  * belongs to its detached runner (the installed `dispatch` command), so it
  * survives the app quitting; the app only reads it and asks through its inbox.
  */
-import { autopilotView, mergePreview, mergeRun, resumeRun, stopRun } from "@core/auto/control";
-import { AutoLedger } from "@core/auto/ledger";
+import {
+  autopilotView,
+  cleanupCandidates,
+  dropRun,
+  mergePreview,
+  mergeRun,
+  messageRun,
+  resumeRun,
+  stopRun,
+} from "@core/auto/control";
 import type { AutoPaths } from "@core/auto/runs";
 import { exportRun } from "@core/auto/runs";
-import { startAutoRun } from "@core/auto/start";
+import { checkAutoStart, startAutoRun } from "@core/auto/start";
 import { newId } from "@core/ids";
 import type { FileStore } from "@core/store";
-import type { AutopilotMergePreview, AutopilotStartOptions, AutopilotView } from "@shared/auto-run";
+import type {
+  AutopilotCleanupItem,
+  AutopilotMergePreview,
+  AutopilotStartOptions,
+  AutopilotView,
+} from "@shared/auto-run";
+import { autopilotHoldsProject, autopilotTakesMessages } from "@shared/autopilot-card";
 import type { ProjectRecord } from "@shared/types";
 
 export interface AutopilotFacilities {
@@ -24,6 +38,8 @@ export interface AutopilotFacilities {
   home?: string;
   docker?: string;
   dockerEnv?: NodeJS.ProcessEnv;
+  /** The Docker context runs use; unset means colima's `dispatch-auto`. */
+  dockerContext?: string;
 }
 
 /** The folder Autopilot builds from: the project's own, read only through a mirror. */
@@ -45,13 +61,39 @@ export async function autopilotBusy(
   project: ProjectRecord,
 ): Promise<boolean> {
   if (!facilities) return false;
-  const view = await projectAutopilot(facilities, project);
-  // An interrupted run resumes over the board as it left it: interactive
-  // work meanwhile would race it. Stop the run to work here.
-  return view?.phase === "preparing" || view?.phase === "running" || view?.phase === "interrupted";
+  // Interactive work while a run holds the project would race it. Stop the run to work here.
+  return autopilotHoldsProject((await projectAutopilot(facilities, project))?.phase);
+}
+
+/** The owner's words go to the run, not the manager (`autopilotTakesMessages`). */
+export async function autopilotTakesMessage(
+  facilities: AutopilotFacilities | undefined,
+  project: ProjectRecord,
+): Promise<boolean> {
+  return (
+    Boolean(facilities) && autopilotTakesMessages(await projectAutopilot(facilities!, project))
+  );
 }
 
 /** Start a run. The caller has checked the runner (`checkRunner`) before changing anything. */
+/** What a start would refuse without a plan, said before the plan is approved. */
+export async function checkAutopilotStart(
+  facilities: AutopilotFacilities,
+  store: FileStore,
+  project: ProjectRecord,
+): Promise<void> {
+  const source = autopilotSource(project);
+  if (!source)
+    throw new Error(
+      "Autopilot builds from a folder on this Mac. Open the project from its folder.",
+    );
+  await checkAutoStart(source, {
+    paths: facilities.paths,
+    connection: () => store.getConnection(),
+    project: async () => ({ project, store }),
+  });
+}
+
 export async function startAutopilot(
   facilities: AutopilotFacilities,
   store: FileStore,
@@ -65,10 +107,12 @@ export async function startAutopilot(
     );
   if (!options.image?.trim())
     throw new Error("Choose the toolchain image Autopilot runs checks in.");
+  const checks = (options.checks ?? []).map((item) => item.trim()).filter(Boolean);
   const started = await startAutoRun(
     {
       dir: source,
       image: options.image.trim(),
+      ...(checks.length ? { checks } : {}),
       allowDependencyDownloads: options.allowDependencyDownloads ?? false,
       ...(options.acceptAlreadyMet ? { acceptAlreadyMet: true } : {}),
       ...(options.prepare?.length ? { prepare: options.prepare } : {}),
@@ -83,6 +127,7 @@ export async function startAutopilot(
           : {}),
       },
       limits: { ...(options.hours ? { hours: options.hours } : {}) },
+      ...(facilities.dockerContext ? { dockerContext: facilities.dockerContext } : {}),
     },
     {
       paths: facilities.paths,
@@ -94,6 +139,13 @@ export async function startAutopilot(
       home: facilities.home,
     },
   );
+  // Confirmed by the owner at start: from now on they are the project's checks.
+  // Read again: the start took seconds, and a manager turn may have saved the project meanwhile.
+  const latest = checks.length ? await store.getProject(project.id) : undefined;
+  if (latest) {
+    latest.policy.verification.commands = checks;
+    await store.saveProject(latest);
+  }
   return { runId: started.run.runId, warnings: started.warnings };
 }
 
@@ -135,7 +187,42 @@ export async function resumeAutopilot(
     ? "Autopilot is already running."
     : result === "finished"
       ? "Every task of this run is verified; there is nothing to resume."
-      : "Autopilot resumed.";
+      : result === "dropped"
+        ? "This run was dropped, so it cannot be resumed. Its verified work can still be merged or exported."
+        : "Autopilot resumed.";
+}
+
+/** Drop the project's newest run: its worktree goes for good, its verified work stays. */
+export async function dropAutopilot(
+  facilities: AutopilotFacilities,
+  project: ProjectRecord,
+): Promise<void> {
+  await dropRun(facilities.paths, await newestRunDir(facilities, project), {
+    docker: facilities.docker,
+    env: facilities.dockerEnv,
+  });
+}
+
+/** Ended runs, across every project, whose worktrees a cleanup can remove. */
+export function autopilotCleanupList(
+  facilities: AutopilotFacilities,
+): Promise<AutopilotCleanupItem[]> {
+  return cleanupCandidates(facilities.paths);
+}
+
+/** Drop the runs the owner picked from the cleanup list; returns how many went. */
+export async function cleanupAutopilot(
+  facilities: AutopilotFacilities,
+  runIds: string[],
+): Promise<number> {
+  const listed = new Set((await cleanupCandidates(facilities.paths)).map((item) => item.runId));
+  const picked = runIds.filter((runId) => listed.has(runId));
+  for (const runId of picked)
+    await dropRun(facilities.paths, facilities.paths.runDir(runId), {
+      docker: facilities.docker,
+      env: facilities.dockerEnv,
+    });
+  return picked.length;
 }
 
 /** The run's verified work as a patch that applies to its base commit. */
@@ -195,13 +282,18 @@ export async function messageAutopilot(
   text: string,
 ): Promise<void> {
   const runDir = await newestRunDir(facilities, project);
-  await new AutoLedger(runDir).postInbox("message", text);
+  const result = await messageRun(runDir, text);
+  if (result === "already_ended")
+    throw new Error("The Autopilot run has just ended. Send your message again for the manager.");
   const at = new Date().toISOString();
   await store.appendMessage(project.id, { id: newId("msg"), role: "user", text, createdAt: at });
   await store.appendMessage(project.id, {
     id: newId("msg"),
     role: "system",
-    text: "Sent to Autopilot. Its Planner reads it at the next milestone plan or review. To change the plan now, stop Autopilot, then talk to the manager.",
+    text:
+      result === "sent"
+        ? "Sent to Autopilot. The worker on the current task hears it now, and later tasks and the Planner's next milestone plan or review read it. To change the plan now, stop Autopilot, then talk to the manager."
+        : "Saved for Autopilot. Its runner is not running; the run reads it when you resume. To change the plan now, stop Autopilot, then talk to the manager.",
     createdAt: at,
   });
 }

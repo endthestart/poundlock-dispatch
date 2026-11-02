@@ -31,7 +31,6 @@ export interface DataLayout {
   /** Per-project saved approvals. Keyed by project id, so it follows the projects. */
   permissions: string;
   ui: string;
-  projectsIndex: string;
   projectsDir: string;
 }
 
@@ -85,7 +84,6 @@ export function layoutFor(root: string, configRoot: string = join(root, "config"
     config: configLayoutFor(configRoot),
     permissions: join(root, "permissions.json"),
     ui: join(root, "ui.json"),
-    projectsIndex: join(root, "projects.json"),
     projectsDir: join(root, "projects"),
   };
 }

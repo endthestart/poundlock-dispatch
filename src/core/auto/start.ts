@@ -5,18 +5,20 @@ import {
   type AutoCase,
   type AutoLimits,
   DEFAULT_AUTO_LIMITS,
+  endedWithoutWorkSince,
   hardHoursFor,
   reduceAutoEvents,
   unfinishedLine,
 } from "@shared/auto-run";
 import { autopilotPlannerFor } from "@shared/autopilot-tier";
-import { requireInteractiveLimits } from "@shared/roles";
+import { goalMilestones } from "@shared/milestones";
+import { projectWorkerRoles, requireInteractiveLimits } from "@shared/roles";
 import type { ConnectionSettings, InteractiveModel, ProjectRecord } from "@shared/types";
 import { webSearchFor } from "@shared/web-search";
 import { frozenTestsIn } from "../frozen-tests";
-import { runGit } from "../git";
+import { gitOutput } from "../git";
 import { PoundlockClient } from "../poundlock";
-import { projectWorkerRoles, resolveVerifierProfile } from "../role-routing";
+import { resolveVerifierProfile } from "../role-routing";
 import type { FileStore } from "../store";
 import { casesFromTasks, validateCases } from "./cases";
 import { createRunWorktree, ensureMirror, MirrorRepo } from "./checkpoint-git";
@@ -112,12 +114,6 @@ export interface AutoStartDeps {
   home?: string;
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const result = await runGit(cwd, args);
-  if (result.code !== 0) throw new Error(result.stderr.trim() || `git ${args[0]} failed`);
-  return result.stdout.trim();
-}
-
 async function freeBytes(path: string): Promise<number> {
   const stats = await statfs(path);
   return stats.bavail * stats.bsize;
@@ -141,17 +137,28 @@ async function previousRuns(
   // The report says to fast-forward the folder to the run's branch, and an owner who
   // does that by hand never presses Merge, so the board would offer the accepted
   // tasks again.
-  const history = new Set((await git(source, ["rev-list", "HEAD"]).catch(() => "")).split("\n"));
+  const history = await folderHistory(source);
   // Why the newest run that worked tasks left some unfinished: its next run's
   // first review needs that, such as which frozen tests a fix kept breaking.
   let carriedOver: string[] | undefined;
   for (const run of await runsForSource(paths, source)) {
     const entries = await new AutoLedger(run.runDir).read().catch(() => []);
     const cases = reduceAutoEvents(entries).cases;
-    if (!carriedOver && cases.some((item) => item.stage !== "pending"))
+    // Only what no review saw, and not a task that found its work already there: a finished
+    // run's reviewed tasks, carried into the owner's next plan, kept its M1 from closing.
+    if (!carriedOver && cases.some((item) => item.stage !== "pending")) {
+      const lastReview =
+        entries.findLast(({ event }) => event.type === "milestone_review")?.seq ?? -1;
+      const endedSince = endedWithoutWorkSince(entries, lastReview);
       carriedOver = cases
-        .filter((item) => item.stage === "abandoned" || item.stage === "blocked")
+        .filter(
+          (item) =>
+            (item.stage === "abandoned" || item.stage === "blocked") &&
+            endedSince.has(item.id) &&
+            item.reason !== "no changes",
+        )
         .map((item) => unfinishedLine(item.title, item));
+    }
     for (const item of cases) {
       if (item.stage === "abandoned" || item.stage === "blocked" || item.stage === "skipped")
         gaveUp.add(item.id);
@@ -162,6 +169,34 @@ async function previousRuns(
       if (event.type === "frozen") for (const path of event.paths) frozen.add(path);
   }
   return { gaveUp, frozen: [...frozen], carriedOver: carriedOver ?? [], merged };
+}
+
+/** Every commit the folder's HEAD has. */
+async function folderHistory(source: string): Promise<Set<string>> {
+  return new Set((await gitOutput(source, ["rev-list", "HEAD"]).catch(() => "")).split("\n"));
+}
+
+/**
+ * The folder's newest run with verified work, when the folder does not have
+ * that work and the owner has not dropped the run. A new run starts from the
+ * folder's commit, so it would do the work again: it did, for 2 h 20 min, on
+ * the M3 night (20 Oct). A run still being worked is left to the folder's lock.
+ */
+async function unmergedRun(
+  paths: AutoPaths,
+  source: string,
+): Promise<{ runId: string; tasks: number } | undefined> {
+  const history = await folderHistory(source);
+  for (const { run, state, alive } of await runsForSource(paths, source)) {
+    const head = state.checkpoints.at(-1)?.commit;
+    if (!head) continue;
+    if (alive || state.dropped || history.has(head)) return undefined;
+    const tasks = state.cases.filter(
+      (item) => item.stage === "accepted" && !history.has(item.checkpoints.at(-1) ?? ""),
+    ).length;
+    return { runId: run.runId, tasks };
+  }
+  return undefined;
 }
 
 /** Accepted tasks whose commits the folder has are applied, as Merge would record. */
@@ -194,23 +229,22 @@ export async function planFromProject(
   const plan = await found.store.getPlan(found.project.id);
   if (!plan?.approved)
     throw new Error("This folder has no approved plan. Approve one first, or pass --plan <file>.");
+  const goal = goalMilestones(plan).length > 0;
   const frozenTests = [
     ...new Set([...frozenTestsIn(plan.frozenTests).map((test) => test.path), ...previous.frozen]),
   ];
   // A goal's Planner replans what the last run gave up, with what it accepted in view:
   // re-running those tasks first would repeat superseded work.
-  const leaveOut = plan.milestones?.length ? previous.gaveUp : new Set<string>();
+  const leaveOut = goal ? previous.gaveUp : new Set<string>();
   return {
     ...(leaveOut.size ? { leftOut: [...leaveOut] } : {}),
-    ...(plan.milestones?.length && previous.carriedOver?.length
-      ? { carriedOver: previous.carriedOver }
-      : {}),
+    ...(goal && previous.carriedOver?.length ? { carriedOver: previous.carriedOver } : {}),
     cases: casesFromTasks(await found.store.getTasks(found.project.id), leaveOut),
     checks: plan.verificationCommands,
     ...(frozenTests.length ? { frozenTests } : {}),
     mutationCheck: found.project.policy.mutationCheck !== false,
     board: { storeRoot: found.store.layout.root, projectId: found.project.id },
-    ...(plan.milestones?.length ? { milestones: true } : {}),
+    ...(goal ? { milestones: true } : {}),
   };
 }
 
@@ -220,7 +254,7 @@ const STARTER_FILE =
 
 /** A repository holding only a README, a licence, notes and the like. */
 export async function isGreenfield(source: string): Promise<boolean> {
-  const files = (await git(source, ["ls-tree", "-r", "--name-only", "HEAD"]))
+  const files = (await gitOutput(source, ["ls-tree", "-r", "--name-only", "HEAD"]))
     .split("\n")
     .filter(Boolean);
   return files.every((file) => STARTER_FILE.test(file));
@@ -246,67 +280,46 @@ function findProfile(models: InteractiveModel[], name: string): InteractiveModel
   );
 }
 
-/**
- * Everything auto mode checks before it takes the folder's lock, and then
- * the run itself: its mirror, worktree and run file. The slow part of the
- * preflight (setup and the plan's checks at the base commit) belongs to the
- * runner, which records it in the ledger before any case starts.
- */
-export async function startAutoRun(
-  request: AutoStartRequest,
-  deps: AutoStartDeps,
-): Promise<{ runDir: string; run: AutoRunFile; model: InteractiveModel; warnings: string[] }> {
-  const folder = await realpath(request.dir).catch(() => {
-    throw new Error(`${request.dir} is not a folder.`);
+/** The folder a run starts from: a whole, clean repository with no run's work left unmerged. */
+async function autoSource(
+  dir: string,
+  paths: AutoPaths,
+): Promise<{ source: string; baseCommit: string }> {
+  const folder = await realpath(dir).catch(() => {
+    throw new Error(`${dir} is not a folder.`);
   });
-  const top = await git(folder, ["rev-parse", "--show-toplevel"]).catch(() => {
+  const top = await gitOutput(folder, ["rev-parse", "--show-toplevel"]).catch(() => {
     throw new Error(`${folder} is not a Git repository. Auto mode works on commits.`);
   });
   const source = await realpath(top);
   if (source !== folder)
     throw new Error(`Auto mode runs a whole repository: use its top folder, ${source}.`);
-  if (await git(source, ["status", "--porcelain", "--untracked-files=no"]))
+  if (await gitOutput(source, ["status", "--porcelain", "--untracked-files=no"]))
     throw new Error(
       "The folder has uncommitted changes to tracked files. Commit or stash them: the run starts from HEAD.",
     );
-  const baseCommit = await git(source, ["rev-parse", "HEAD"]);
+  const baseCommit = await gitOutput(source, ["rev-parse", "HEAD"]);
+  const unmerged = await unmergedRun(paths, source);
+  if (unmerged)
+    throw new Error(
+      `Run ${unmerged.runId} has verified work the folder does not have (${unmerged.tasks} ${unmerged.tasks === 1 ? "task" : "tasks"}). A new run starts from the folder and would do it again: resume that run, merge its work into the folder, or drop it, then start.`,
+    );
+  return { source, baseCommit };
+}
 
-  const found = await deps.project(source);
-  // A plan file never names a board: only the project's own plan joins its tasks.
-  let plan: AutoPlanFile;
-  if (request.plan) plan = { ...request.plan, board: undefined };
-  else {
-    const previous = await previousRuns(deps.paths, source);
-    await markMerged(found, previous.merged);
-    plan = await planFromProject(found, previous);
-  }
-  // A goal may start with nothing to run: its Planner reviews the milestone first.
-  if (plan.cases.length || !(plan.board && plan.milestones)) validateCases(plan.cases);
-  const checks = request.checks?.length
-    ? request.checks
-    : plan.checks?.length
-      ? plan.checks
-      : (found?.project.policy.verification.commands ?? []);
-  if (!checks.length)
-    throw new Error("Auto mode needs the plan's checks: acceptance depends on them. Pass --check.");
-  const scope: AutoScope = {
-    ...plan.scope,
-    ...request.scope,
-    protectedPaths: [
-      ...(plan.scope?.protectedPaths ?? []),
-      ...(request.scope?.protectedPaths ?? []),
-      ...(found?.project.policy.verification.protectedPaths ?? []),
-    ],
-  };
-
+/** The worker a run uses, and the connection it is reached through. */
+async function autoWorker(
+  deps: Pick<AutoStartDeps, "connection" | "fetch">,
+  found: Awaited<ReturnType<AutoStartDeps["project"]>>,
+  profile: string | undefined,
+) {
   const connection = await deps.connection();
   if (!connection.url || !connection.token)
     throw new Error("No Poundlock connection is saved. Run /connect in the terminal client first.");
   const client = new PoundlockClient(connection.url, connection.token, deps.fetch);
   const models = await client.listInteractiveModels();
   const wanted =
-    request.profile ??
-    plan.profile ??
+    profile ??
     (found
       ? projectWorkerRoles(connection.roles, found.project.policy).interactive?.profileId
       : connection.roles.interactive?.profileId);
@@ -334,6 +347,70 @@ export async function startAutoRun(
     throw new Error(`${model.id} is not one of this project's allowed worker profiles.`);
   if (model.status === "disabled")
     throw new Error(`${model.id} is disabled in Poundlock: ${model.disabled?.reason ?? ""}`.trim());
+  return { connection, client, models, model };
+}
+
+/**
+ * What a start can check before it has a plan: the folder and the worker. The
+ * host runs it before approving the plan, so a refused start leaves the plan
+ * as it was; a TUI start refused for an external worker had already approved
+ * it.
+ */
+export async function checkAutoStart(
+  dir: string,
+  deps: Pick<AutoStartDeps, "paths" | "project" | "connection" | "fetch">,
+): Promise<void> {
+  const { source } = await autoSource(dir, deps.paths);
+  await autoWorker(deps, await deps.project(source), undefined);
+}
+
+/**
+ * Everything auto mode checks before it takes the folder's lock, and then
+ * the run itself: its mirror, worktree and run file. The slow part of the
+ * preflight (setup and the plan's checks at the base commit) belongs to the
+ * runner, which records it in the ledger before any case starts.
+ */
+export async function startAutoRun(
+  request: AutoStartRequest,
+  deps: AutoStartDeps,
+): Promise<{ runDir: string; run: AutoRunFile; model: InteractiveModel; warnings: string[] }> {
+  const { source, baseCommit } = await autoSource(request.dir, deps.paths);
+
+  const found = await deps.project(source);
+  // A plan file never names a board: only the project's own plan joins its tasks.
+  let plan: AutoPlanFile;
+  if (request.plan) plan = { ...request.plan, board: undefined };
+  else {
+    const previous = await previousRuns(deps.paths, source);
+    await markMerged(found, previous.merged);
+    plan = await planFromProject(found, previous);
+  }
+  // A goal may start with nothing to run: its Planner reviews the milestone first.
+  if (plan.cases.length || !(plan.board && plan.milestones)) validateCases(plan.cases);
+  const checks = request.checks?.length
+    ? request.checks
+    : plan.checks?.length
+      ? plan.checks
+      : (found?.project.policy.verification.commands ?? []);
+  if (!checks.length)
+    throw new Error(
+      "Autopilot needs checks, the commands that prove each task: confirm them when you start it, set them in Project settings, or pass --check.",
+    );
+  const scope: AutoScope = {
+    ...plan.scope,
+    ...request.scope,
+    protectedPaths: [
+      ...(plan.scope?.protectedPaths ?? []),
+      ...(request.scope?.protectedPaths ?? []),
+      ...(found?.project.policy.verification.protectedPaths ?? []),
+    ],
+  };
+
+  const { connection, client, models, model } = await autoWorker(
+    deps,
+    found,
+    request.profile ?? plan.profile,
+  );
   // A goal's Planner: the Verifier when bound, else the worker, advising only.
   let goal: AutoGoal | undefined;
   if (plan.board && plan.milestones) {
@@ -346,7 +423,7 @@ export async function startAutoRun(
       );
     if (planner.external && request.goal?.allowPlannerDestination !== destination)
       throw new Error(
-        `The Planner, ${planner.model.id}, would send excerpts of this project's code to ${destination}. Agree to that when you start Autopilot, or choose a Verifier on the operator's network.`,
+        `The Planner, ${planner.model.id}, would send excerpts of this project's code to ${destination}. Agree to that when you start Autopilot (in the terminal: --allow-planner ${destination}), or choose a Verifier on the operator's network.`,
       );
     goal = {
       checkpoint: request.goal?.checkpoint ?? "notify",
@@ -410,7 +487,8 @@ export async function startAutoRun(
     ...(plan.frozenTests?.length ? { frozenTests: plan.frozenTests } : {}),
     ...(plan.mutationCheck ? { mutationCheck: true } : {}),
     ...(goal ? { goal } : {}),
-    ...(goal && (await isGreenfield(source)) ? { greenfield: true } : {}),
+    // An empty repository has nothing to check yet, with milestones or without.
+    ...((await isGreenfield(source)) ? { greenfield: true } : {}),
     ...(plan.leftOut?.length ? { leftOut: plan.leftOut } : {}),
     ...(plan.carriedOver?.length ? { carriedOver: plan.carriedOver } : {}),
   };
@@ -424,7 +502,7 @@ export async function startAutoRun(
     autoRoot: await realpath(deps.paths.root),
   });
   const size = Number(
-    /size-pack: (\d+)/.exec(await git(source, ["count-objects", "-v"]))?.[1] ?? 0,
+    /size-pack: (\d+)/.exec(await gitOutput(source, ["count-objects", "-v"]))?.[1] ?? 0,
   );
   const needed = MIN_FREE_BYTES + size * 1024 * 2;
   const free = await (deps.freeBytes ?? freeBytes)(deps.paths.root);

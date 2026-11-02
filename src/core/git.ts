@@ -133,7 +133,7 @@ function spawnGit(
 export async function gitOutput(cwd: string, args: string[]): Promise<string> {
   const result = await runGit(cwd, args);
   if (result.code !== 0) {
-    throw new Error(result.stderr || result.stdout || `git ${args.join(" ")} failed`);
+    throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
   }
   return result.stdout.trim();
 }

@@ -1,4 +1,5 @@
 import { type AutoLimits, type AutoRunState, processedTokens } from "@shared/auto-run";
+import { limitText } from "@shared/autopilot-card";
 
 export interface LimitHit {
   kind: "wall_clock" | "cases" | "tokens" | "consecutive_failures" | "no_progress";
@@ -19,11 +20,15 @@ export function checkLimits(state: AutoRunState, limits: AutoLimits, now: Date):
     return {
       kind: "wall_clock",
       level: "hard",
-      detail: `${limits.hardHours} h hard limit reached`,
+      detail: `${limitText(limits.hardHours)} hard limit reached`,
     };
   }
   if (elapsed >= limits.softHours) {
-    return { kind: "wall_clock", level: "soft", detail: `${limits.softHours} h limit reached` };
+    return {
+      kind: "wall_clock",
+      level: "soft",
+      detail: `${limitText(limits.softHours)} limit reached`,
+    };
   }
   // Skipped cases never ran.
   const started = state.cases.filter((c) => c.stage !== "pending" && c.stage !== "skipped").length;

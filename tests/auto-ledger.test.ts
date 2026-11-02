@@ -196,8 +196,8 @@ describe("auto run state", () => {
       ),
     );
     const text = autoProgressView(state, new Date(T0 + 8 * 60_000)).join("\n");
-    expect(text).toContain("Cases 2/2 verified, not reviewed");
-    expect(text).toContain("Ended: every case verified (not reviewed)");
+    expect(text).toContain("Tasks 2/2 verified, not reviewed");
+    expect(text).toContain("Ended: every task verified (not reviewed)");
     expect(text).toContain("Commands run in a container (node:22-slim), no network");
     for (const label of [text, ...Object.values(OUTCOME_LABELS)]) {
       expect(label).not.toMatch(/\b(approved|accepted|ready to merge|mergeable)\b/i);

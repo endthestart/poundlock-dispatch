@@ -324,19 +324,6 @@ legend h2 {
   gap: 0 12px;
   max-width: 36rem;
 }
-/* Two columns once a form section has the room, per the density pass —
-   opt in with `.form-grid-2` on a `.form-section`'s field wrapper. */
-.form-grid-2 {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0 16px;
-  max-width: none;
-}
-@container conversation (min-width: 560px) {
-  .form-grid-2 {
-    grid-template-columns: 1fr 1fr;
-  }
-}
 .field-error {
   color: var(--state-fault-text);
   font-size: var(--fs-meta);
@@ -762,7 +749,8 @@ body.col-resizing button {
   flex: 0 0 auto;
   margin-left: auto;
   color: var(--muted);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--fs-meta);
   font-weight: 450;
   white-space: nowrap;
@@ -840,7 +828,8 @@ body.col-resizing button {
   padding: 3px 16px 5px 56px;
   margin: 0;
   color: var(--muted);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--fs-meta);
   border-bottom: 1px solid var(--line);
   overflow-wrap: anywhere;
@@ -1003,7 +992,8 @@ body.col-resizing button {
 }
 .message-time {
   color: var(--faint);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--fs-tiny);
   font-variant-numeric: tabular-nums;
 }
@@ -1174,15 +1164,6 @@ body.col-resizing button {
     opacity: 0.72;
   }
 }
-/* A band sweeping across the row for the one item actually running. */
-@keyframes sweep {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
 .live-work-in-transcript {
   margin-top: -6px;
 }
@@ -1208,7 +1189,8 @@ body.col-resizing button {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   color: var(--faint);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--fs-meta);
   line-height: 20px;
 }
@@ -1469,20 +1451,6 @@ details > summary {
   overflow: hidden;
   border-bottom: 1px solid var(--line);
 }
-/* The one item actually running gets a band sweeping across it. */
-.task-item.sweep::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(
-    100deg,
-    transparent,
-    color-mix(in srgb, var(--state-active) 10%, transparent),
-    transparent
-  );
-  animation: sweep 2.1s linear infinite;
-}
 .task-row {
   list-style: none;
   display: grid;
@@ -1524,7 +1492,8 @@ details[open] > .task-row::after {
 .task-sub {
   display: block;
   color: var(--muted);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--fs-meta);
   margin-top: 1px;
 }
@@ -2170,9 +2139,6 @@ button.composer-infolet-action {
     border: none;
     background: var(--state-active);
   }
-  .task-item.sweep::after {
-    display: none;
-  }
 }
 
 .warn-text {
@@ -2182,6 +2148,15 @@ button.composer-infolet-action {
 /* Autopilot (ADR 016) */
 .autopilot-dock {
   border-left: 3px solid var(--state-active);
+}
+/* The run's actions stay in view while its card and Details scroll: Resume, Export
+   and Merge sat below the fold of a 364 px dock (UX review, 30 Oct). */
+.autopilot-dock .dock-actions {
+  position: sticky;
+  bottom: -10px;
+  padding: 8px 0 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
 }
 .autopilot-details summary {
   cursor: pointer;
