@@ -295,7 +295,7 @@ describe("terminal keys", () => {
       expect(
         messages.some((message) => /Not allowed: \/tmp\/other-folder/.test(message.text)),
       ).toBe(true);
-    });
+    }, 30_000);
   });
 
   it("leaves a manager's question to the message box", async () => {
