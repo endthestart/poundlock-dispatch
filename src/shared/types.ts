@@ -413,8 +413,23 @@ export interface ManagedIdentityUsage {
   usage_status?: string;
 }
 
+/** The install's one ceiling on external spend, as every application may see it. */
+export interface FrontierBudgetStanding {
+  configured: boolean;
+  state: "unconfigured" | "ok" | "low" | "exhausted";
+  remaining_usd?: number | null;
+  periods: {
+    period: "weekly" | "monthly";
+    limit_usd: number;
+    spent_usd: number;
+    resets_at: string;
+  }[];
+}
+
 export interface ManagedIdentityUsageResponse {
   managed_identities: ManagedIdentityUsage[];
+  /** Absent on a controller older than contract revision 6. */
+  frontier_budget?: FrontierBudgetStanding;
 }
 
 export interface PoundlockCapabilitiesView {
@@ -429,6 +444,7 @@ export interface PoundlockCapabilitiesView {
 
 export interface ConnectionProbe {
   managedIdentities?: ManagedIdentityUsage[];
+  frontierBudget?: FrontierBudgetStanding;
   ok: boolean;
   url: string;
   ready: boolean;

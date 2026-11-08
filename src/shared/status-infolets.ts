@@ -1,5 +1,5 @@
 import { contextUsageView } from "./compaction";
-import type { AppStateView, ManagedIdentityUsage } from "./types";
+import type { AppStateView, FrontierBudgetStanding, ManagedIdentityUsage } from "./types";
 import type { ComposerInfoletId } from "./ui-preferences";
 
 interface StatusInfoletView {
@@ -47,6 +47,20 @@ function budgetInfolet(rows: ManagedIdentityUsage[]): Omit<StatusInfoletView, "i
   return { text, title: title || text };
 }
 
+/** The install's ceiling, once one is set: it is the limit that stops work. */
+function frontierInfolet(budget: FrontierBudgetStanding): Omit<StatusInfoletView, "id"> | null {
+  if (!budget.configured) return null;
+  const title = budget.periods
+    .map(
+      (period) =>
+        `${period.period === "weekly" ? "This week" : "This month"}: ${formatMoney(period.spent_usd)} of ${formatMoney(period.limit_usd)}, resets ${new Date(period.resets_at).toLocaleString()}`,
+    )
+    .join(" · ");
+  if (budget.state === "exhausted") return { text: "Frontier budget used up", title };
+  const left = `${formatMoney(budget.remaining_usd ?? 0)} left`;
+  return { text: budget.state === "low" ? `${left}, running low` : left, title };
+}
+
 function contextInfolet(usage: AppStateView["contextUsage"]): Omit<StatusInfoletView, "id"> | null {
   if (!usage) return null;
   const view = contextUsageView(usage);
@@ -58,8 +72,11 @@ export const STATUS_INFOLET_CATALOG: StatusInfoletDefinition[] = [
   {
     id: "budget",
     label: "Budget",
-    description: "Application gateway spend from Poundlock / LiteLLM.",
-    resolve: (state) => budgetInfolet(state.probe?.managedIdentities ?? []),
+    description:
+      "What's left of the install's frontier budget, or this application's gateway spend.",
+    resolve: (state) =>
+      (state.probe?.frontierBudget && frontierInfolet(state.probe.frontierBudget)) ||
+      budgetInfolet(state.probe?.managedIdentities ?? []),
   },
   {
     id: "context",

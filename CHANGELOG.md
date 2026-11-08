@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2 (8 November 2026)
+
+Tested with Poundlock 0.4.4 (contract revision 7) and Toolkit 0.6.0. It needs nothing new from
+Poundlock: the budget chip appears once a controller reports a frontier budget (revision 6 or later).
+
+- The composer's budget chip shows what's left of Poundlock's frontier budget for the install once
+  one is set, says when it runs low or is used up, and its tooltip gives each period and its reset.
+  A used-up frontier budget, or OpenRouter's 403 workspace limit, now moves a cloud role to the local
+  fallback like any other spending refusal, and an unpriced external model says how to fix it.
+
 ## 0.3.1 (2 November 2026)
 
 The first published release, a developer preview. Autopilot is a preview. Tested with

@@ -18,10 +18,13 @@ and suitability stay separate facts.
 
 | Dispatch | Poundlock | Toolkit |
 |---|---|---|
-| 0.3.1 | 0.3.0 (API 1, contract revision 5) | 0.5.0 |
+| 0.3.2 | 0.4.4 (API 1, contract revision 7) | 0.6.0 |
 
 Contract revision 5 adds the capacity queue. Dispatch asks to wait in line for a
 busy model; an older controller ignores that and answers at once, as before.
+Revision 6 adds the install's frontier budget, which Dispatch shows in its budget chip and
+treats as a spending refusal once used up; an older controller reports none, and the chip stays
+hidden. Revision 7's job budget is for job clients; Dispatch does not use it.
 
 ## Changing a contract
 

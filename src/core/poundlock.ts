@@ -149,12 +149,12 @@ export class PoundlockClient implements PoundlockApi {
       }
 
       let interactiveModels: InteractiveModel[] = [];
-      let managedIdentities: import("@shared/types").ManagedIdentityUsage[] | undefined;
+      let usage: import("@shared/types").ManagedIdentityUsageResponse | undefined;
       let capabilities: import("@shared/types").PoundlockCapabilitiesView | undefined;
       try {
         interactiveModels = await this.listInteractiveModels();
         granted.add("models:read");
-        managedIdentities = (await this.usage().catch(() => undefined))?.managed_identities;
+        usage = await this.usage().catch(() => undefined);
         // No such endpoint (404) means a controller older than any this Dispatch
         // supports. Any other failure says nothing either way, so it is not judged.
         let judged = true;
@@ -218,7 +218,8 @@ export class PoundlockClient implements PoundlockApi {
         missingPermissions,
         durableModels: options.models,
         interactiveModels,
-        managedIdentities,
+        managedIdentities: usage?.managed_identities,
+        frontierBudget: usage?.frontier_budget,
         harnesses: options.harnesses,
         gitHosts: options.git_hosts ?? [],
         outboundNetworkAllowed: Boolean(options.outbound_network_allowed),

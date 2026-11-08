@@ -1,12 +1,13 @@
 /**
  * A provider refusing for money: OpenRouter's 402 when its weekly limit or the
- * credit runs out, LiteLLM's key budget, a provider's quota. Such a refusal
+ * credit runs out, OpenRouter's workspace guardrail (a 403), LiteLLM's key budget,
+ * a provider's quota, Poundlock's frontier budget for the install. Such a refusal
  * does not pass with waiting, so a cloud role moves once to the local
  * fallback the owner chose (27 Oct). A 402 that asks for a retry later
  * (OpenRouter's in-flight credit budget) is a wait, not this.
  */
 const SPENDING =
-  /\b402\b|payment required|insufficient[ _]credits|can only afford|credit balance is too low|budget has been exceeded|budget_exceeded|exceeded (?:your|the) (?:current )?quota|insufficient_quota|key limit exceeded/i;
+  /\b402\b|payment required|insufficient[ _]credits|can only afford|credit balance is too low|budget has been exceeded|budget_exceeded|exceeded (?:your|the) (?:current )?quota|insufficient_quota|key limit exceeded|budget limit exceeded|frontier_budget_exhausted|frontier budget of \S+ is used up/i;
 const LATER = /Retry-After|in_flight_budget/i;
 
 export function isSpendingRefusal(error: string | undefined): boolean {

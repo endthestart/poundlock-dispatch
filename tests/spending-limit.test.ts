@@ -8,6 +8,9 @@ it("tells a spending refusal from a wait and from other failures", () => {
     "This request requires more credits, or fewer max_tokens. You requested up to 64000 tokens, but can only afford 1200.",
     "litellm.BudgetExceededError: Budget has been exceeded! Current cost: 20.04, Max budget: 20.0",
     "You exceeded your current quota, please check your plan and billing details.",
+    "403 Budget limit exceeded (weekly limit)",
+    '403 {"error":{"code":"frontier_budget_exhausted"}}',
+    "the install's weekly frontier budget of $25.00 is used up; it resets at 2026-11-09T06:00:00+00:00",
   ])
     expect(isSpendingRefusal(refusal), refusal).toBe(true);
   for (const other of [

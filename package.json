@@ -1,6 +1,6 @@
 {
   "name": "poundlock-dispatch-gui",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Poundlock Dispatch: plan, delegate and review work on your projects with a Project Manager and Pi workers, using models served by Poundlock.",
   "author": "Michael Anderson",

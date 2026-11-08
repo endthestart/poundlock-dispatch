@@ -41,6 +41,10 @@ describe("preflight cache", () => {
       "edit this application token and tick “external:invoke”",
     );
   });
+  it("says what to do about the install's frontier budget", () => {
+    expect(blockedPreflightMessage("frontier_budget_exhausted")).toContain("until it resets");
+    expect(blockedPreflightMessage("frontier_budget_unpriced")).toContain("Set price");
+  });
   it("keys by controller, token fingerprint, profile UUID, route, and operation", () => {
     const cache = new PreflightCache();
     const key = {

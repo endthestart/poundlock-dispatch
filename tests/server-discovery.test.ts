@@ -126,20 +126,24 @@ it("patches managed identity usage without a full probe", async () => {
       };
     },
     () => {},
-    async () => [
-      {
-        endpoint_id: "gw",
-        status: "ready",
-        usage_status: "available",
-        usage: { remaining_budget: remaining },
-      },
-    ],
+    async () => ({
+      managed_identities: [
+        {
+          endpoint_id: "gw",
+          status: "ready",
+          usage_status: "available",
+          usage: { remaining_budget: remaining },
+        },
+      ],
+      frontier_budget: { configured: true, state: "low", remaining_usd: 2, periods: [] },
+    }),
   );
   await cache.refresh(connection);
   remaining = 3.1;
   await cache.refreshUsage(connection);
   expect(probes).toBe(1);
   expect(cache.probe?.managedIdentities?.[0].usage?.remaining_budget).toBe(3.1);
+  expect(cache.probe?.frontierBudget?.state).toBe("low");
 });
 
 it("preserves discovery for a save of the same address but invalidates changed credentials or controller", () => {

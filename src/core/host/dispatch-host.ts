@@ -220,8 +220,7 @@ export class DispatchHost {
       () => {
         void this.emitState();
       },
-      async (connection) =>
-        (await new PoundlockClient(connection.url, connection.token).usage()).managed_identities,
+      async (connection) => new PoundlockClient(connection.url, connection.token).usage(),
     );
     this.managerProvider = deps.managerProvider({
       getStore: () => this.store,

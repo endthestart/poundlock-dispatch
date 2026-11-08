@@ -6,7 +6,7 @@ controller. You talk to a Project Manager; it agrees a plan with you and hands
 tasks to Pi workers, which edit your project folder; checks and the manager's
 review decide what is accepted.
 
-Status: 0.3.1, a developer preview. Autopilot is a preview within it. One
+Status: 0.3.2, a developer preview. Autopilot is a preview within it. One
 maintainer looks after this project; see [status and support](#status-and-support).
 
 ## How work runs

@@ -116,6 +116,12 @@ export function blockedPreflightMessage(reason: string): string {
   if (reason === "managed_budget_required") {
     return "This external profile has no usable managed budget. Review its Poundlock gateway identity and budget before retrying.";
   }
+  if (reason === "frontier_budget_exhausted") {
+    return "The install's frontier budget is used up, so Poundlock refused this external model until it resets or the operator raises it. Project context was not sent.";
+  }
+  if (reason === "frontier_budget_unpriced") {
+    return "This external model has no price, so Poundlock's frontier budget cannot meter it. The operator can set one with Set price in Poundlock's Models page. Project context was not sent.";
+  }
   return `Poundlock blocked this profile (${reason}). Project context was not sent.`;
 }
 

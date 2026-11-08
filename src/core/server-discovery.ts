@@ -14,7 +14,7 @@ export class ServerDiscovery {
     private notify: () => void,
     private fetchUsage?: (
       connection: ConnectionSettings,
-    ) => Promise<import("@shared/types").ManagedIdentityUsage[] | undefined>,
+    ) => Promise<import("@shared/types").ManagedIdentityUsageResponse | undefined>,
   ) {}
 
   invalidate(): void {
@@ -83,9 +83,13 @@ export class ServerDiscovery {
     const generation = this.generation;
     this.usagePending = (async () => {
       try {
-        const rows = await this.fetchUsage!(connection);
-        if (generation !== this.generation || !rows || !this.probe) return;
-        this.probe = { ...this.probe, managedIdentities: rows };
+        const usage = await this.fetchUsage!(connection);
+        if (generation !== this.generation || !usage || !this.probe) return;
+        this.probe = {
+          ...this.probe,
+          managedIdentities: usage.managed_identities,
+          frontierBudget: usage.frontier_budget,
+        };
         this.notify();
       } catch {
         /* Keep the last chip; a usage blip should not blank the catalog. */
